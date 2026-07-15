@@ -18,10 +18,8 @@ const filePicker = document.querySelector("#filePicker");
 const fileList = document.querySelector("#fileList");
 const queueSummary = document.querySelector("#queueSummary");
 const videoSettings = document.querySelector("#videoSettings");
+const durationFullInput = document.querySelector("#durationFullInput");
 const durationInput = document.querySelector("#durationInput");
-const align16Input = document.querySelector("#align16Input");
-const qualityInput = document.querySelector("#qualityInput");
-const encoderInput = document.querySelector("#encoderInput");
 const openOutputButton = document.querySelector("#openOutput");
 const startQueueButton = document.querySelector("#startQueue");
 const pauseQueueButton = document.querySelector("#pauseQueue");
@@ -29,6 +27,7 @@ const stopQueueButton = document.querySelector("#stopQueue");
 const clearQueueButton = document.querySelector("#clearQueue");
 const toast = document.querySelector("#toast");
 const versionLabel = document.querySelector("#versionLabel");
+const faqButton = document.querySelector("#faqButton");
 const updateButton = document.querySelector("#updateButton");
 const updateModal = document.querySelector("#updateModal");
 const updateTitle = document.querySelector("#updateTitle");
@@ -38,6 +37,8 @@ const updateProgressFill = document.querySelector("#updateProgressFill");
 const updateProgressText = document.querySelector("#updateProgressText");
 const downloadUpdateButton = document.querySelector("#downloadUpdate");
 const closeUpdateModalButton = document.querySelector("#closeUpdateModal");
+const faqModal = document.querySelector("#faqModal");
+const closeFaqModalButton = document.querySelector("#closeFaqModal");
 
 let pendingUpdate = null;
 
@@ -63,6 +64,13 @@ async function init() {
   });
 
   window.gfxConv.onUpdateDownloadProgress((update) => {
+    if (update.phase === "installing") {
+      updateBody.textContent = "Installing update silently. The app will restart automatically.";
+      updateProgressFill.style.width = "100%";
+      updateProgressText.textContent = "Installing";
+      return;
+    }
+
     const progress = update.progress || 0;
     updateProgressFill.style.width = `${progress}%`;
     updateProgressText.textContent = `${progress}%`;
@@ -99,6 +107,8 @@ function bindEvents() {
   });
 
   updateButton.addEventListener("click", () => checkUpdates(true));
+  faqButton.addEventListener("click", showFaqModal);
+  closeFaqModalButton.addEventListener("click", hideFaqModal);
   closeUpdateModalButton.addEventListener("click", hideUpdateModal);
   downloadUpdateButton.addEventListener("click", downloadAndInstallUpdate);
   startQueueButton.addEventListener("click", startQueue);
@@ -132,13 +142,14 @@ function bindEvents() {
     filePicker.value = "";
   });
 
-  durationInput.addEventListener("change", () => {
-    durationInput.value = clampInteger(durationInput.value, 4, 15, 4);
+  durationFullInput.addEventListener("change", () => {
+    durationInput.disabled = durationFullInput.checked;
     saveCurrentSettings();
   });
-  align16Input.addEventListener("change", saveCurrentSettings);
-  qualityInput.addEventListener("change", saveCurrentSettings);
-  encoderInput.addEventListener("change", saveCurrentSettings);
+  durationInput.addEventListener("change", () => {
+    durationInput.value = clampInteger(durationInput.value, 1, 86400, 4);
+    saveCurrentSettings();
+  });
 }
 
 async function hydrateVersion() {
@@ -152,10 +163,9 @@ async function hydrateSettings() {
 
   state.outputDir = settings.outputDir || "";
   outputDirInput.value = state.outputDir;
-  durationInput.value = clampInteger(video.durationSeconds, 4, 15, 4);
-  align16Input.checked = video.align16 !== false;
-  qualityInput.value = video.quality === "lossless" ? "lossless" : "visual";
-  encoderInput.value = "cpu";
+  durationFullInput.checked = video.durationMode !== "custom";
+  durationInput.disabled = durationFullInput.checked;
+  durationInput.value = clampInteger(video.durationSeconds, 1, 86400, 4);
   setMode(settings.mode === "video" ? "video" : "png", false);
 }
 
@@ -319,10 +329,8 @@ async function clearQueue() {
 
 function getSettings() {
   return {
-    durationSeconds: durationInput.value,
-    align16: align16Input.checked,
-    quality: qualityInput.value === "lossless" ? "lossless" : "visual",
-    encoder: "cpu"
+    durationMode: durationFullInput.checked ? "full" : "custom",
+    durationSeconds: durationInput.value
   };
 }
 
@@ -452,7 +460,7 @@ async function checkUpdates(showNoUpdate) {
 
 function showUpdateModal(result) {
   updateTitle.textContent = `${result.releaseName || result.latestVersion} is available`;
-  updateBody.textContent = `Current version: ${result.currentVersion}. New version: ${result.latestVersion}. The installer will be downloaded and launched locally.`;
+  updateBody.textContent = `Current version: ${result.currentVersion}. New version: ${result.latestVersion}. The installer will download, install silently, and relaunch the app.`;
   updateProgressWrap.classList.add("hidden");
   updateProgressFill.style.width = "0%";
   updateProgressText.textContent = "0%";
@@ -472,14 +480,27 @@ async function downloadAndInstallUpdate() {
   }
 
   downloadUpdateButton.disabled = true;
+  closeUpdateModalButton.disabled = true;
+  updateBody.textContent = "Downloading update...";
   updateProgressWrap.classList.remove("hidden");
 
   try {
     await window.gfxConv.downloadAndInstallUpdate();
   } catch (error) {
     downloadUpdateButton.disabled = false;
+    closeUpdateModalButton.disabled = false;
     showToast(error.message || "Update install failed.");
   }
+}
+
+function showFaqModal() {
+  faqModal.classList.remove("hidden");
+  faqModal.setAttribute("aria-hidden", "false");
+}
+
+function hideFaqModal() {
+  faqModal.classList.add("hidden");
+  faqModal.setAttribute("aria-hidden", "true");
 }
 
 function findItem(id) {

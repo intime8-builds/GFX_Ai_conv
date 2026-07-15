@@ -1,6 +1,6 @@
 {
   "name": "gfx_ai_conv",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local drag-and-drop converter for PNG and H.264 MP4 production files.",
   "main": "src/main.js",
   "author": "intime8",

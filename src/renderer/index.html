@@ -13,7 +13,10 @@
           <h1>GFX Ai Conv</h1>
           <p id="versionLabel">Local converter</p>
         </div>
-        <button id="updateButton" title="Check for updates" type="button">Updates</button>
+        <div class="top-actions">
+          <button id="faqButton" title="Open FAQ" type="button">FAQ</button>
+          <button id="updateButton" title="Check for updates" type="button">Updates</button>
+        </div>
       </header>
 
       <section class="toolbar" aria-label="Conversion mode">
@@ -29,30 +32,19 @@
         </div>
 
         <div class="video-settings hidden" id="videoSettings">
+          <label class="checkline" for="durationFullInput">
+            <input id="durationFullInput" type="checkbox" checked>
+            <span>Full duration</span>
+          </label>
+
           <label class="field" for="durationInput">
-            <span>Duration (sec)</span>
-            <input id="durationInput" type="number" min="4" max="15" step="1" value="4">
+            <span>Custom duration (sec)</span>
+            <input id="durationInput" type="number" min="1" max="86400" step="1" value="4" disabled>
           </label>
 
-          <label class="checkline" for="align16Input">
-            <input id="align16Input" type="checkbox" checked>
-            <span>16 px grid</span>
-          </label>
-
-          <label class="field" for="qualityInput">
-            <span>Quality</span>
-            <select id="qualityInput">
-              <option value="visual">Visually lossless</option>
-              <option value="lossless">Lossless H.264</option>
-            </select>
-          </label>
-
-          <label class="field" for="encoderInput">
-            <span>Encoder</span>
-            <select id="encoderInput">
-              <option value="cpu">CPU x264 High10</option>
-            </select>
-          </label>
+          <div class="fixed-spec">
+            Lossless H.264 High10 · 10-bit MP4
+          </div>
         </div>
       </section>
 
@@ -94,6 +86,31 @@
           <div class="modal-actions">
             <button id="downloadUpdate" type="button">Download and install</button>
             <button id="closeUpdateModal" type="button">Later</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="modal hidden" id="faqModal" aria-hidden="true">
+        <div class="modal-panel faq-panel">
+          <h2>FAQ</h2>
+          <div class="faq-content">
+            <h3>Basic flow</h3>
+            <p>Choose an output folder, drop files or numbered EXR folders into the queue, then press Start.</p>
+            <h3>PNG output</h3>
+            <p>PNG mode exports a 16-bit PNG from the first readable frame using an sRGB-oriented RGB path.</p>
+            <h3>Video output</h3>
+            <p>H.264 MP4 mode exports lossless 10-bit H.264 High10 MP4 through CPU x264.</p>
+            <h3>Duration</h3>
+            <p>Full duration is enabled by default. Disable it only when a specific duration in seconds is required.</p>
+            <h3>EXR folders</h3>
+            <p>Drop a folder with continuous numbered files like shot_0001.exr, shot_0002.exr. The app reads the sequence at 25 fps.</p>
+            <h3>Queue controls</h3>
+            <p>Start begins queued jobs. Pause stops after the current job. Stop kills the current FFmpeg process. Clear empties the queue.</p>
+            <h3>Updates</h3>
+            <p>Updates are downloaded and installed from the app window. The installer runs silently and the app relaunches after installation.</p>
+          </div>
+          <div class="modal-actions">
+            <button id="closeFaqModal" type="button">Close</button>
           </div>
         </div>
       </section>

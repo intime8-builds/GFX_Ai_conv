@@ -5,7 +5,7 @@ Local Windows converter with a small drag-and-drop interface.
 ## Modes
 
 - **PNG**: converts supported image/video sources to 16-bit `.png` in an sRGB-oriented RGB output path.
-- **H.264 MP4**: converts supported video sources to 10-bit H.264 High 10 `.mp4`, BT.709/sRGB-friendly color metadata, integer duration from 4 to 15 seconds, and optional 16 px dimension alignment.
+- **H.264 MP4**: converts supported video sources to lossless 10-bit H.264 High 10 `.mp4`, BT.709/sRGB-friendly color metadata, full source duration by default, or a custom duration when set.
 - **EXR folders**: in H.264 MP4 mode, a dropped folder with numbered `.exr` files is treated as an image sequence.
 
 FFmpeg is bundled with the app through `ffmpeg-static`.
@@ -16,10 +16,7 @@ The app saves settings automatically when you change them:
 
 - selected mode: `PNG` or `H.264 MP4`
 - output folder
-- video duration
-- 16 px grid option
-- video quality option
-- video encoder option: CPU x264 High10
+- video duration mode: full or custom seconds
 
 Settings are stored locally at:
 
@@ -77,7 +74,7 @@ GitHub Actions will build the Windows installer `.exe` and unpacked `.zip`, then
 
 ## Updates
 
-The app checks the latest GitHub Release at startup and from the update button in the header. In this first version it opens the release page for download instead of silently installing updates.
+The app checks the latest GitHub Release at startup and from the `Updates` button. Updates are downloaded inside the app, installed silently, and the app relaunches after installation.
 
 ## Windows Downloads
 
@@ -90,7 +87,7 @@ The Electron portable self-extracting target is intentionally not used because i
 
 ## Notes
 
-H.264 is normally a lossy delivery codec. The default video quality is set to visually lossless CRF 16 with CPU x264 High10. A lossless H.264 option is available, but files can become much larger and may be less convenient for downstream tools.
+Video output is fixed to lossless H.264 High10 with CRF 0. Files can become much larger and may be less convenient for downstream tools, but this matches the final output requirement.
 
 ## FAQ
 
@@ -124,11 +121,11 @@ PNG mode takes the first video/image frame FFmpeg can read and writes it as 16-b
 
 ### What does H.264 MP4 mode do?
 
-H.264 MP4 mode writes `.mp4` files with `libx264`, H.264 High 10 profile, `yuv420p10le`, BT.709 color metadata, and an sRGB transfer tag. The app loops short inputs if needed and trims the result to the selected integer duration from 4 to 15 seconds.
+H.264 MP4 mode writes `.mp4` files with `libx264`, H.264 High 10 profile, `yuv420p10le`, BT.709 color metadata, and an sRGB transfer tag. Full duration is used by default. If custom duration is enabled, the app loops short inputs if needed and trims the result to the selected number of seconds.
 
 ### Is Duration measured in seconds?
 
-Yes. The `Duration (sec)` field is measured in seconds and accepts integer values from 4 to 15.
+Yes. Full duration is enabled by default. When custom duration is enabled, the field is measured in seconds.
 
 ### Can I drop an EXR sequence folder?
 
@@ -144,23 +141,11 @@ shot_0003.exr
 
 The sequence must be continuous. If a frame is missing, the app reports the missing frame number instead of silently making a broken video.
 
-EXR folders are read at 25 fps, then looped or trimmed to the selected `Duration (sec)`.
-
-### Why is the encoder CPU x264 High10?
-
-The final video requirement is 10-bit H.264 MP4. The local NVIDIA H.264 encoder reports that 10-bit encode is not supported, so the app uses `libx264` High 10 for the final output.
-
-### Can NVIDIA GPU encoding be used for the final video?
-
-Not for the current 10-bit H.264 target. NVIDIA GPU encoding is faster for 8-bit H.264 on many machines, but this app now prioritizes the final 10-bit spec.
-
-### What does 16 px grid mean?
-
-When enabled, the output video width and height are rounded down to the nearest multiple of 16 pixels. This is useful for technical pipelines that require dimensions aligned to a 16 px grid.
+EXR folders are read at 25 fps. Full duration uses the full sequence. Custom duration loops or trims the sequence to the selected seconds.
 
 ### Is H.264 truly lossless?
 
-The default `Visually lossless` option uses CRF 16, which is high quality but still technically lossy. The `Lossless H.264` option uses CRF 0 in High 10, but files can become much larger and may not be accepted by every downstream tool.
+Yes, the app uses CRF 0 in High 10 mode for video output. Files can become much larger and may not be accepted by every downstream tool.
 
 ### Does the app keep audio?
 
@@ -168,7 +153,7 @@ No. H.264 MP4 mode currently exports video only and removes audio.
 
 ### How do updates work?
 
-The app checks the latest GitHub Release on startup and when you press `Updates`. If a newer installer exists, the app shows an update window inside the app. Press `Download and install` to download the installer locally and launch it without opening GitHub in the browser.
+The app checks the latest GitHub Release on startup and when you press `Updates`. If a newer installer exists, the app shows an update window inside the app. Press `Download and install` to download the installer, run silent installation, and relaunch the app without opening GitHub in the browser.
 
 ### Why can't I add files before choosing an output folder?
 

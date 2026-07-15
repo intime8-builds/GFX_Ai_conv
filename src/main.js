@@ -21,10 +21,8 @@ const DEFAULT_SETTINGS = {
   mode: "png",
   outputDir: "",
   video: {
-    durationSeconds: 4,
-    align16: true,
-    quality: "visual",
-    encoder: "cpu"
+    durationMode: "full",
+    durationSeconds: 4
   }
 };
 
@@ -202,11 +200,11 @@ ipcMain.handle("updates:downloadAndInstall", async (event) => {
   }
 
   const installerPath = await downloadUpdateInstaller(result.installerAsset, event.sender);
-  spawn(installerPath, [], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: false
-  }).unref();
+  event.sender.send("updates:downloadProgress", {
+    progress: 100,
+    phase: "installing"
+  });
+  launchSilentInstallerAfterQuit(installerPath);
   isQuitting = true;
   app.quit();
 
@@ -444,6 +442,41 @@ async function downloadUpdateInstaller(asset, sender) {
   return installerPath;
 }
 
+function launchSilentInstallerAfterQuit(installerPath) {
+  const helperPath = path.join(updatesDir, "install-update.ps1");
+  const currentExePath = process.execPath;
+  const currentPid = process.pid;
+  const script = [
+    `$ErrorActionPreference = 'SilentlyContinue'`,
+    `$pidToWait = ${currentPid}`,
+    `$installer = '${escapePowerShellString(installerPath)}'`,
+    `$appExe = '${escapePowerShellString(currentExePath)}'`,
+    `Wait-Process -Id $pidToWait -Timeout 30`,
+    `Start-Process -FilePath $installer -ArgumentList '/S' -Wait`,
+    `Start-Sleep -Seconds 2`,
+    `if (Test-Path $appExe) { Start-Process -FilePath $appExe }`
+  ].join("\r\n");
+
+  fs.writeFileSync(helperPath, script, "utf8");
+  spawn("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-WindowStyle",
+    "Hidden",
+    "-File",
+    helperPath
+  ], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  }).unref();
+}
+
+function escapePowerShellString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
 function createTray() {
   if (tray) {
     return;
@@ -497,11 +530,7 @@ function buildTrayMenu() {
 
           if (answer.response === 0) {
             const installerPath = await downloadUpdateInstaller(result.installerAsset, mainWindow ? mainWindow.webContents : null);
-            spawn(installerPath, [], {
-              detached: true,
-              stdio: "ignore",
-              windowsHide: false
-            }).unref();
+            launchSilentInstallerAfterQuit(installerPath);
             isQuitting = true;
             app.quit();
           }
@@ -580,27 +609,26 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
   }
 
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
-  const duration = clampInteger(settings.durationSeconds, 4, 15, 4);
-  const filters = buildVideoFilters(Boolean(settings.align16));
-  const qualityArgs = buildQualityArgs(settings.quality === "lossless");
-  const encoderArgs = ["-c:v", "libx264"];
+  const duration = getRequestedDurationSeconds(settings);
+  const progressDuration = duration || await getInputDurationSeconds(inputPath);
+  const filters = buildVideoFilters();
+  const losslessArgs = buildLosslessH264Args();
 
   const args = [
     "-hide_banner",
     "-y",
-    "-stream_loop",
-    "-1",
+    ...buildDurationInputArgs(duration),
     "-i",
     inputPath,
-    "-t",
-    String(duration),
+    ...buildDurationOutputArgs(duration),
     "-map",
     "0:v:0",
     "-an",
     "-vf",
     filters,
-    ...encoderArgs,
-    ...qualityArgs,
+    "-c:v",
+    "libx264",
+    ...losslessArgs,
     "-profile:v",
     "high10",
     "-pix_fmt",
@@ -618,7 +646,7 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
 
   await runFfmpeg(withProgressArgs(args), {
     ...progress,
-    durationSeconds: duration
+    durationSeconds: progressDuration
   });
   return outputPath;
 }
@@ -657,31 +685,29 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
   }
 
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
-  const duration = clampInteger(settings.durationSeconds, 4, 15, 4);
-  const filters = buildVideoFilters(Boolean(settings.align16));
-  const qualityArgs = buildQualityArgs(settings.quality === "lossless");
-  const encoderArgs = ["-c:v", "libx264"];
+  const duration = getRequestedDurationSeconds(settings);
+  const filters = buildVideoFilters();
+  const losslessArgs = buildLosslessH264Args();
 
   const args = [
     "-hide_banner",
     "-y",
-    "-stream_loop",
-    "-1",
+    ...buildDurationInputArgs(duration),
     "-framerate",
     "25",
     "-start_number",
     String(sequence.startNumber),
     "-i",
     sequence.pattern,
-    "-t",
-    String(duration),
+    ...buildDurationOutputArgs(duration),
     "-map",
     "0:v:0",
     "-an",
     "-vf",
     filters,
-    ...encoderArgs,
-    ...qualityArgs,
+    "-c:v",
+    "libx264",
+    ...losslessArgs,
     "-profile:v",
     "high10",
     "-pix_fmt",
@@ -699,23 +725,33 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
 
   await runFfmpeg(withProgressArgs(args), {
     ...progress,
-    durationSeconds: duration
+    durationSeconds: duration || sequence.frameCount / 25
   });
   return outputPath;
 }
 
-function buildQualityArgs(lossless) {
-  return lossless
-    ? ["-preset", "slow", "-crf", "0"]
-    : ["-preset", "slow", "-crf", "16"];
+function buildLosslessH264Args() {
+  return ["-preset", "slow", "-crf", "0"];
 }
 
-function buildVideoFilters(align16) {
-  const scale = align16
-    ? "scale=trunc(iw/16)*16:trunc(ih/16)*16:flags=lanczos"
-    : "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos";
+function buildVideoFilters() {
+  return "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos,format=yuv420p10le";
+}
 
-  return `${scale},format=yuv420p10le`;
+function getRequestedDurationSeconds(settings) {
+  if (!settings || settings.durationMode !== "custom") {
+    return null;
+  }
+
+  return clampInteger(settings.durationSeconds, 1, 86400, 4);
+}
+
+function buildDurationInputArgs(duration) {
+  return duration ? ["-stream_loop", "-1"] : [];
+}
+
+function buildDurationOutputArgs(duration) {
+  return duration ? ["-t", String(duration)] : [];
 }
 
 function withProgressArgs(args) {
@@ -864,8 +900,34 @@ function findExrSequence(directoryPath) {
   return {
     startNumber,
     firstFile: path.join(directoryPath, frames[0].name),
-    pattern: normalizeFfmpegPath(path.join(directoryPath, patternName))
+    pattern: normalizeFfmpegPath(path.join(directoryPath, patternName)),
+    frameCount: frames.length
   };
+}
+
+function getInputDurationSeconds(inputPath) {
+  return new Promise((resolve) => {
+    const child = spawn(ffmpegPath, ["-hide_banner", "-i", inputPath], {
+      windowsHide: true
+    });
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", () => resolve(null));
+    child.on("close", () => {
+      const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+
+      if (!match) {
+        resolve(null);
+        return;
+      }
+
+      resolve((Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]));
+    });
+  });
 }
 
 function normalizeFfmpegPath(filePath) {
@@ -959,17 +1021,14 @@ function sanitizeSettings(settings) {
   const incomingVideo = incoming.video && typeof incoming.video === "object" ? incoming.video : {};
   const mode = incoming.mode === "video" ? "video" : "png";
   const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
-  const quality = incomingVideo.quality === "lossless" ? "lossless" : "visual";
-  const encoder = "cpu";
+  const durationMode = incomingVideo.durationMode === "custom" ? "custom" : "full";
 
   return {
     mode,
     outputDir,
     video: {
-      durationSeconds: clampInteger(incomingVideo.durationSeconds, 4, 15, DEFAULT_SETTINGS.video.durationSeconds),
-      align16: incomingVideo.align16 !== false,
-      quality,
-      encoder
+      durationMode,
+      durationSeconds: clampInteger(incomingVideo.durationSeconds, 1, 86400, DEFAULT_SETTINGS.video.durationSeconds)
     }
   };
 }
