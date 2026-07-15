@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS = {
     durationSeconds: 4,
     align16: true,
     quality: "visual",
-    encoder: "gpu"
+    encoder: "cpu"
   }
 };
 
@@ -560,10 +560,18 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
       "0:v:0",
       "-frames:v",
       "1",
+      "-vf",
+      "format=rgba64be",
       "-update",
       "1",
       "-compression_level",
       "6",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "iec61966-2-1",
+      "-colorspace",
+      "rgb",
       outputPath
     ];
 
@@ -574,10 +582,8 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
   const duration = clampInteger(settings.durationSeconds, 4, 15, 4);
   const filters = buildVideoFilters(Boolean(settings.align16));
-  const qualityArgs = buildQualityArgs(settings.encoder, settings.quality === "lossless");
-  const encoderArgs = settings.encoder === "cpu"
-    ? ["-c:v", "libx264"]
-    : ["-c:v", "h264_nvenc"];
+  const qualityArgs = buildQualityArgs(settings.quality === "lossless");
+  const encoderArgs = ["-c:v", "libx264"];
 
   const args = [
     "-hide_banner",
@@ -595,8 +601,10 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
     filters,
     ...encoderArgs,
     ...qualityArgs,
+    "-profile:v",
+    "high10",
     "-pix_fmt",
-    "yuv420p",
+    "yuv420p10le",
     "-color_primaries",
     "bt709",
     "-color_trc",
@@ -629,10 +637,18 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
       "0:v:0",
       "-frames:v",
       "1",
+      "-vf",
+      "format=rgba64be",
       "-update",
       "1",
       "-compression_level",
       "6",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "iec61966-2-1",
+      "-colorspace",
+      "rgb",
       outputPath
     ];
 
@@ -643,10 +659,8 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
   const duration = clampInteger(settings.durationSeconds, 4, 15, 4);
   const filters = buildVideoFilters(Boolean(settings.align16));
-  const qualityArgs = buildQualityArgs(settings.encoder, settings.quality === "lossless");
-  const encoderArgs = settings.encoder === "cpu"
-    ? ["-c:v", "libx264"]
-    : ["-c:v", "h264_nvenc"];
+  const qualityArgs = buildQualityArgs(settings.quality === "lossless");
+  const encoderArgs = ["-c:v", "libx264"];
 
   const args = [
     "-hide_banner",
@@ -668,8 +682,10 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
     filters,
     ...encoderArgs,
     ...qualityArgs,
+    "-profile:v",
+    "high10",
     "-pix_fmt",
-    "yuv420p",
+    "yuv420p10le",
     "-color_primaries",
     "bt709",
     "-color_trc",
@@ -688,16 +704,10 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
   return outputPath;
 }
 
-function buildQualityArgs(encoder, lossless) {
-  if (encoder === "cpu") {
-    return lossless
-      ? ["-preset", "slow", "-crf", "0"]
-      : ["-preset", "slow", "-crf", "16"];
-  }
-
+function buildQualityArgs(lossless) {
   return lossless
-    ? ["-preset", "p7", "-tune", "lossless", "-rc", "constqp", "-qp", "0"]
-    : ["-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", "16", "-b:v", "0"];
+    ? ["-preset", "slow", "-crf", "0"]
+    : ["-preset", "slow", "-crf", "16"];
 }
 
 function buildVideoFilters(align16) {
@@ -705,7 +715,7 @@ function buildVideoFilters(align16) {
     ? "scale=trunc(iw/16)*16:trunc(ih/16)*16:flags=lanczos"
     : "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos";
 
-  return `${scale},format=yuv420p`;
+  return `${scale},format=yuv420p10le`;
 }
 
 function withProgressArgs(args) {
@@ -950,7 +960,7 @@ function sanitizeSettings(settings) {
   const mode = incoming.mode === "video" ? "video" : "png";
   const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
   const quality = incomingVideo.quality === "lossless" ? "lossless" : "visual";
-  const encoder = incomingVideo.encoder === "cpu" ? "cpu" : "gpu";
+  const encoder = "cpu";
 
   return {
     mode,

@@ -155,7 +155,7 @@ async function hydrateSettings() {
   durationInput.value = clampInteger(video.durationSeconds, 4, 15, 4);
   align16Input.checked = video.align16 !== false;
   qualityInput.value = video.quality === "lossless" ? "lossless" : "visual";
-  encoderInput.value = video.encoder === "cpu" ? "cpu" : "gpu";
+  encoderInput.value = "cpu";
   setMode(settings.mode === "video" ? "video" : "png", false);
 }
 
@@ -322,7 +322,7 @@ function getSettings() {
     durationSeconds: durationInput.value,
     align16: align16Input.checked,
     quality: qualityInput.value === "lossless" ? "lossless" : "visual",
-    encoder: encoderInput.value === "cpu" ? "cpu" : "gpu"
+    encoder: "cpu"
   };
 }
 
