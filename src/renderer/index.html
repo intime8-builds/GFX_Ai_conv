@@ -22,7 +22,6 @@
       <section class="toolbar" aria-label="Режим конвертации">
         <button class="mode-button active" type="button" data-mode="png">PNG</button>
         <button class="mode-button" type="button" data-mode="video">H.264 MP4</button>
-        <button class="mode-button" type="button" data-mode="aces">ACES2065-1 EXR</button>
       </section>
 
       <section class="controls">
@@ -58,6 +57,14 @@
           <label class="field" for="durationInput">
             <span>Своя длина (сек)</span>
             <input id="durationInput" type="number" min="1" max="86400" step="1" value="4" disabled>
+          </label>
+
+          <label class="field" for="colorSpaceInput">
+            <span>Цвет</span>
+            <select id="colorSpaceInput">
+              <option value="srgb">sRGB</option>
+              <option value="aces2065">ACES2065-1</option>
+            </select>
           </label>
 
           <div class="fixed-spec" id="outputSpec">
@@ -118,8 +125,8 @@
             <p>Режим PNG сохраняет 16-битный PNG из первого читаемого кадра через sRGB-oriented RGB path. Для статичных файлов это обычная конвертация изображения, для видео берётся первый кадр.</p>
             <h3>H.264 MP4</h3>
             <p>Режим H.264 MP4 сохраняет lossless 10-bit H.264 High10 MP4 через CPU x264, без звука, с BT.709/sRGB-friendly метаданными цвета.</p>
-            <h3>ACES2065-1 EXR</h3>
-            <p>Режим ACES2065-1 EXR пишет half-float OpenEXR. Статичные файлы сохраняются одним .exr, видео и EXR-папки сохраняются как EXR-секвенция в отдельную папку.</p>
+            <h3>ACES2065-1 в H.264</h3>
+            <p>В режиме H.264 MP4 можно выбрать цвет ACES2065-1. Приложение преобразует пиксели из sRGB/Rec.709 в ACES2065-1/AP0 перед H.264 encode, но файл остаётся .mp4.</p>
             <h3>Разрешение</h3>
             <p>По умолчанию используется исходное разрешение. Отключите Исходное разрешение и задайте ширину/высоту, если нужен конкретный output size. Для MP4 нечётные значения будут приведены к чётным пикселям.</p>
             <h3>Длина</h3>

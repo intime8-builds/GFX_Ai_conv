@@ -30,6 +30,7 @@ const videoSettings = document.querySelector("#videoSettings");
 const durationFullInput = document.querySelector("#durationFullInput");
 const durationInput = document.querySelector("#durationInput");
 const outputSpec = document.querySelector("#outputSpec");
+const colorSpaceInput = document.querySelector("#colorSpaceInput");
 const sourceSizeInput = document.querySelector("#sourceSizeInput");
 const widthInput = document.querySelector("#widthInput");
 const heightInput = document.querySelector("#heightInput");
@@ -176,6 +177,11 @@ function bindEvents() {
       saveCurrentSettings();
     });
   });
+
+  colorSpaceInput.addEventListener("change", () => {
+    updateOutputSpec();
+    saveCurrentSettings();
+  });
 }
 
 async function hydrateVersion() {
@@ -193,11 +199,12 @@ async function hydrateSettings() {
   durationFullInput.checked = video.durationMode !== "custom";
   durationInput.disabled = durationFullInput.checked;
   durationInput.value = clampInteger(video.durationSeconds, 1, 86400, 4);
+  colorSpaceInput.value = video.colorSpace === "aces2065" ? "aces2065" : "srgb";
   sourceSizeInput.checked = outputSize.mode !== "custom";
   widthInput.value = clampInteger(outputSize.width, 1, 16384, 1920);
   heightInput.value = clampInteger(outputSize.height, 1, 16384, 1080);
   updateResolutionInputs();
-  setMode(["png", "video", "aces"].includes(settings.mode) ? settings.mode : "png", false);
+  setMode(settings.mode === "video" ? "video" : "png", false);
 }
 
 async function addFiles(fileListLike) {
@@ -362,6 +369,7 @@ function getSettings() {
   return {
     durationMode: durationFullInput.checked ? "full" : "custom",
     durationSeconds: durationInput.value,
+    colorSpace: colorSpaceInput.value === "aces2065" ? "aces2065" : "srgb",
     outputSize: {
       mode: sourceSizeInput.checked ? "source" : "custom",
       width: widthInput.value,
@@ -371,16 +379,24 @@ function getSettings() {
 }
 
 function setMode(mode, persist) {
-  state.mode = ["png", "video", "aces"].includes(mode) ? mode : "png";
+  state.mode = mode === "video" ? "video" : "png";
   modeButtons.forEach((item) => item.classList.toggle("active", item.dataset.mode === state.mode));
-  videoSettings.classList.toggle("hidden", state.mode === "png");
-  outputSpec.textContent = state.mode === "aces"
-    ? "ACES2065-1 · half-float EXR"
-    : "Lossless H.264 High10 · 10-bit MP4";
+  videoSettings.classList.toggle("hidden", state.mode !== "video");
+  updateOutputSpec();
 
   if (persist) {
     saveCurrentSettings();
   }
+}
+
+function updateOutputSpec() {
+  if (state.mode !== "video") {
+    return;
+  }
+
+  outputSpec.textContent = colorSpaceInput.value === "aces2065"
+    ? "Lossless H.264 High10 · ACES2065-1 color"
+    : "Lossless H.264 High10 · sRGB color";
 }
 
 function updateResolutionInputs() {

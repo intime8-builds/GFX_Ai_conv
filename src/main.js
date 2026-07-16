@@ -11,7 +11,7 @@ const ffmpegStaticPath = require("ffmpeg-static");
 const REPO_OWNER = "intime8";
 const REPO_NAME = "GFX_Ai_conv";
 const SEQUENCE_FPS = 24;
-const CONVERSION_MODES = new Set(["png", "video", "aces"]);
+const CONVERSION_MODES = new Set(["png", "video"]);
 const SRGB_LINEAR_TO_ACES2065_MATRIX = [
   [0.4396329819, 0.3829886982, 0.1773783199],
   [0.0897764430, 0.8134394287, 0.0967841283],
@@ -30,6 +30,7 @@ const DEFAULT_SETTINGS = {
   video: {
     durationMode: "full",
     durationSeconds: 4,
+    colorSpace: "srgb",
     outputSize: {
       mode: "source",
       width: 1920,
@@ -590,10 +591,6 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
     return convertDirectory(inputPath, outputDir, mode, settings, progress);
   }
 
-  if (mode === "aces") {
-    return convertFileToAces2065(inputPath, outputDir, settings, progress);
-  }
-
   if (mode === "png") {
     const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
     const filters = buildPngFilters(settings);
@@ -670,10 +667,6 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
 
 async function convertDirectory(inputPath, outputDir, mode, settings, progress = {}) {
   const sequence = findExrSequence(inputPath);
-
-  if (mode === "aces") {
-    return convertDirectoryToAces2065(inputPath, outputDir, settings, sequence, progress);
-  }
 
   if (mode === "png") {
     const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
@@ -752,102 +745,6 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
   return outputPath;
 }
 
-async function convertFileToAces2065(inputPath, outputDir, settings, progress = {}) {
-  const sourceDuration = await getInputDurationSeconds(inputPath);
-
-  if (sourceDuration) {
-    const outputFolder = uniqueOutputDirectory(outputDir, inputPath, "_aces2065");
-    const outputPattern = normalizeFfmpegPath(path.join(outputFolder, `${sanitizeFileName(path.parse(inputPath).name) || "frame"}_%04d.exr`));
-    const duration = getRequestedDurationSeconds(settings);
-    const args = [
-      "-hide_banner",
-      "-y",
-      ...buildDurationInputArgs(duration),
-      "-i",
-      inputPath,
-      ...buildDurationOutputArgs(duration),
-      "-map",
-      "0:v:0",
-      "-an",
-      "-vf",
-      buildAces2065Filter(settings),
-      "-compression",
-      "zip16",
-      "-format",
-      "half",
-      "-start_number",
-      "1",
-      outputPattern
-    ];
-
-    await runFfmpeg(withProgressArgs(args), {
-      ...progress,
-      durationSeconds: duration || sourceDuration
-    });
-    return outputFolder;
-  }
-
-  const outputPath = uniqueOutputPath(outputDir, inputPath, ".exr", "_aces2065");
-  const args = [
-    "-hide_banner",
-    "-y",
-    "-i",
-    inputPath,
-    "-map",
-    "0:v:0",
-    "-frames:v",
-    "1",
-    "-vf",
-    buildAces2065Filter(settings),
-    "-compression",
-    "zip16",
-    "-format",
-    "half",
-    "-update",
-    "1",
-    outputPath
-  ];
-
-  await runFfmpeg(args, progress);
-  return outputPath;
-}
-
-async function convertDirectoryToAces2065(inputPath, outputDir, settings, sequence, progress = {}) {
-  const outputFolder = uniqueOutputDirectory(outputDir, inputPath, "_aces2065");
-  const outputPattern = normalizeFfmpegPath(path.join(outputFolder, `${sanitizeFileName(path.parse(inputPath).name) || "frame"}_%04d.exr`));
-  const duration = getRequestedDurationSeconds(settings);
-  const args = [
-    "-hide_banner",
-    "-y",
-    ...buildDurationInputArgs(duration),
-    "-framerate",
-    String(SEQUENCE_FPS),
-    "-start_number",
-    String(sequence.startNumber),
-    "-i",
-    sequence.pattern,
-    ...buildDurationOutputArgs(duration),
-    "-map",
-    "0:v:0",
-    "-an",
-    "-vf",
-    buildAces2065Filter(settings),
-    "-compression",
-    "zip16",
-    "-format",
-    "half",
-    "-start_number",
-    "1",
-    outputPattern
-  ];
-
-  await runFfmpeg(withProgressArgs(args), {
-    ...progress,
-    durationSeconds: duration || sequence.frameCount / SEQUENCE_FPS
-  });
-  return outputFolder;
-}
-
 function buildLosslessH264Args() {
   return ["-preset", "slow", "-crf", "0"];
 }
@@ -860,16 +757,21 @@ function buildPngFilters(settings) {
 }
 
 function buildVideoFilters(settings) {
-  return [
-    buildResizeFilter(settings, { forceEven: true }) || "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos",
-    "format=yuv420p10le"
-  ].join(",");
+  const filters = [
+    buildResizeFilter(settings, { forceEven: true }) || "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos"
+  ];
+
+  if (settings && settings.colorSpace === "aces2065") {
+    filters.push(buildAces2065H264Filter());
+  }
+
+  filters.push("format=yuv420p10le");
+  return filters.join(",");
 }
 
-function buildAces2065Filter(settings) {
+function buildAces2065H264Filter() {
   const matrix = SRGB_LINEAR_TO_ACES2065_MATRIX;
   return [
-    buildResizeFilter(settings, { forceEven: false }),
     "zscale=matrixin=bt709:transferin=iec61966-2-1:primariesin=bt709:matrix=gbr:transfer=linear:primaries=bt709:range=full",
     "format=gbrpf32le",
     [
@@ -884,7 +786,7 @@ function buildAces2065Filter(settings) {
       `bg=${matrix[2][1]}`,
       `bb=${matrix[2][2]}`
     ].join(":")
-  ].filter(Boolean).join(",");
+  ].join(",");
 }
 
 function buildResizeFilter(settings, options = {}) {
@@ -1124,21 +1026,6 @@ function uniqueOutputPath(outputDir, inputPath, extension, suffix = "") {
   return candidate;
 }
 
-function uniqueOutputDirectory(outputDir, inputPath, suffix = "") {
-  const parsed = path.parse(inputPath);
-  const safeName = sanitizeFileName(parsed.name) || "converted";
-  let candidate = path.join(outputDir, `${safeName}${suffix}`);
-  let index = 1;
-
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(outputDir, `${safeName}${suffix}_${index}`);
-    index += 1;
-  }
-
-  fs.mkdirSync(candidate, { recursive: true });
-  return candidate;
-}
-
 function sanitizeFileName(fileName) {
   return String(fileName || "").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
 }
@@ -1216,6 +1103,7 @@ function sanitizeSettings(settings) {
   const mode = CONVERSION_MODES.has(incoming.mode) ? incoming.mode : "png";
   const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
   const durationMode = incomingVideo.durationMode === "custom" ? "custom" : "full";
+  const colorSpace = incomingVideo.colorSpace === "aces2065" ? "aces2065" : "srgb";
   const outputSizeMode = incomingOutputSize.mode === "custom" ? "custom" : "source";
 
   return {
@@ -1224,6 +1112,7 @@ function sanitizeSettings(settings) {
     video: {
       durationMode,
       durationSeconds: clampInteger(incomingVideo.durationSeconds, 1, 86400, DEFAULT_SETTINGS.video.durationSeconds),
+      colorSpace,
       outputSize: {
         mode: outputSizeMode,
         width: clampInteger(incomingOutputSize.width, 1, 16384, DEFAULT_SETTINGS.video.outputSize.width),

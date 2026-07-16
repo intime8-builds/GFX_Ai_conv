@@ -86,7 +86,7 @@ h2 {
 
 .toolbar {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -146,10 +146,17 @@ button:focus {
   outline-offset: 1px;
 }
 
-.resolution-settings,
+.resolution-settings {
+  display: grid;
+  grid-template-columns: minmax(150px, 180px) minmax(190px, 240px) minmax(150px, 200px);
+  align-items: end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .video-settings {
   display: grid;
-  grid-template-columns: minmax(150px, 180px) minmax(190px, 240px) minmax(250px, 1fr);
+  grid-template-columns: minmax(150px, 180px) minmax(190px, 240px) minmax(150px, 200px) minmax(250px, 1fr);
   align-items: end;
   gap: 12px;
   margin-top: 12px;
