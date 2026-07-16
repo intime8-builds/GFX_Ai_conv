@@ -11,6 +11,12 @@ const ffmpegStaticPath = require("ffmpeg-static");
 const REPO_OWNER = "intime8";
 const REPO_NAME = "GFX_Ai_conv";
 const SEQUENCE_FPS = 24;
+const CONVERSION_MODES = new Set(["png", "video", "aces"]);
+const SRGB_LINEAR_TO_ACES2065_MATRIX = [
+  [0.4396329819, 0.3829886982, 0.1773783199],
+  [0.0897764430, 0.8134394287, 0.0967841283],
+  [0.0175411704, 0.1115465533, 0.8709122763]
+];
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD4SURBVFhH7ZSxEYJQFATpwrbogw5sQKvAwBJISYwowIyMkMAavgwc3hcOxuS+ge7MJnrOPnU0+zNzKE4hpcgSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNdq3DJc+LGjDUW7XIkvUaNNzEzok30lyQPTO+ybk0XN53SQ44Nqi/vm7VSJL1EiZ14+pf6+mx14HTXR1uXqNElmiRsqvH7D1FcyH+Q8oqnAbUwPzpzCY8IDoaxAkOWBU/RcsfpZ7IkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyP0+WPQGxDZvikCMZ/QAAAABJRU5ErkJggg==";
 const appDataRoot = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
 const stableUserDataPath = path.join(appDataRoot, "GFX Ai Conv");
@@ -23,7 +29,12 @@ const DEFAULT_SETTINGS = {
   outputDir: "",
   video: {
     durationMode: "full",
-    durationSeconds: 4
+    durationSeconds: 4,
+    outputSize: {
+      mode: "source",
+      width: 1920,
+      height: 1080
+    }
   }
 };
 
@@ -268,7 +279,7 @@ ipcMain.handle("convert:file", async (event, payload) => {
     throw new Error("Папка вывода не существует.");
   }
 
-  if (!["png", "video"].includes(mode)) {
+  if (!CONVERSION_MODES.has(mode)) {
     throw new Error("Неизвестный режим конвертации.");
   }
 
@@ -299,7 +310,7 @@ ipcMain.handle("convert:files", async (event, payload) => {
     throw new Error("Папка вывода не существует.");
   }
 
-  if (!["png", "video"].includes(mode)) {
+  if (!CONVERSION_MODES.has(mode)) {
     throw new Error("Неизвестный режим конвертации.");
   }
 
@@ -579,8 +590,13 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
     return convertDirectory(inputPath, outputDir, mode, settings, progress);
   }
 
+  if (mode === "aces") {
+    return convertFileToAces2065(inputPath, outputDir, settings, progress);
+  }
+
   if (mode === "png") {
     const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
+    const filters = buildPngFilters(settings);
     const args = [
       "-hide_banner",
       "-y",
@@ -591,7 +607,7 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
       "-frames:v",
       "1",
       "-vf",
-      "format=rgba64be",
+      filters,
       "-update",
       "1",
       "-compression_level",
@@ -612,7 +628,7 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
   const duration = getRequestedDurationSeconds(settings);
   const progressDuration = duration || await getInputDurationSeconds(inputPath);
-  const filters = buildVideoFilters();
+  const filters = buildVideoFilters(settings);
   const losslessArgs = buildLosslessH264Args();
 
   const args = [
@@ -655,8 +671,13 @@ async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
 async function convertDirectory(inputPath, outputDir, mode, settings, progress = {}) {
   const sequence = findExrSequence(inputPath);
 
+  if (mode === "aces") {
+    return convertDirectoryToAces2065(inputPath, outputDir, settings, sequence, progress);
+  }
+
   if (mode === "png") {
     const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
+    const filters = buildPngFilters(settings);
     const args = [
       "-hide_banner",
       "-y",
@@ -667,7 +688,7 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
       "-frames:v",
       "1",
       "-vf",
-      "format=rgba64be",
+      filters,
       "-update",
       "1",
       "-compression_level",
@@ -687,7 +708,7 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
 
   const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
   const duration = getRequestedDurationSeconds(settings);
-  const filters = buildVideoFilters();
+  const filters = buildVideoFilters(settings);
   const losslessArgs = buildLosslessH264Args();
 
   const args = [
@@ -731,12 +752,166 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
   return outputPath;
 }
 
+async function convertFileToAces2065(inputPath, outputDir, settings, progress = {}) {
+  const sourceDuration = await getInputDurationSeconds(inputPath);
+
+  if (sourceDuration) {
+    const outputFolder = uniqueOutputDirectory(outputDir, inputPath, "_aces2065");
+    const outputPattern = normalizeFfmpegPath(path.join(outputFolder, `${sanitizeFileName(path.parse(inputPath).name) || "frame"}_%04d.exr`));
+    const duration = getRequestedDurationSeconds(settings);
+    const args = [
+      "-hide_banner",
+      "-y",
+      ...buildDurationInputArgs(duration),
+      "-i",
+      inputPath,
+      ...buildDurationOutputArgs(duration),
+      "-map",
+      "0:v:0",
+      "-an",
+      "-vf",
+      buildAces2065Filter(settings),
+      "-compression",
+      "zip16",
+      "-format",
+      "half",
+      "-start_number",
+      "1",
+      outputPattern
+    ];
+
+    await runFfmpeg(withProgressArgs(args), {
+      ...progress,
+      durationSeconds: duration || sourceDuration
+    });
+    return outputFolder;
+  }
+
+  const outputPath = uniqueOutputPath(outputDir, inputPath, ".exr", "_aces2065");
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-i",
+    inputPath,
+    "-map",
+    "0:v:0",
+    "-frames:v",
+    "1",
+    "-vf",
+    buildAces2065Filter(settings),
+    "-compression",
+    "zip16",
+    "-format",
+    "half",
+    "-update",
+    "1",
+    outputPath
+  ];
+
+  await runFfmpeg(args, progress);
+  return outputPath;
+}
+
+async function convertDirectoryToAces2065(inputPath, outputDir, settings, sequence, progress = {}) {
+  const outputFolder = uniqueOutputDirectory(outputDir, inputPath, "_aces2065");
+  const outputPattern = normalizeFfmpegPath(path.join(outputFolder, `${sanitizeFileName(path.parse(inputPath).name) || "frame"}_%04d.exr`));
+  const duration = getRequestedDurationSeconds(settings);
+  const args = [
+    "-hide_banner",
+    "-y",
+    ...buildDurationInputArgs(duration),
+    "-framerate",
+    String(SEQUENCE_FPS),
+    "-start_number",
+    String(sequence.startNumber),
+    "-i",
+    sequence.pattern,
+    ...buildDurationOutputArgs(duration),
+    "-map",
+    "0:v:0",
+    "-an",
+    "-vf",
+    buildAces2065Filter(settings),
+    "-compression",
+    "zip16",
+    "-format",
+    "half",
+    "-start_number",
+    "1",
+    outputPattern
+  ];
+
+  await runFfmpeg(withProgressArgs(args), {
+    ...progress,
+    durationSeconds: duration || sequence.frameCount / SEQUENCE_FPS
+  });
+  return outputFolder;
+}
+
 function buildLosslessH264Args() {
   return ["-preset", "slow", "-crf", "0"];
 }
 
-function buildVideoFilters() {
-  return "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos,format=yuv420p10le";
+function buildPngFilters(settings) {
+  return [
+    buildResizeFilter(settings, { forceEven: false }),
+    "format=rgba64be"
+  ].filter(Boolean).join(",");
+}
+
+function buildVideoFilters(settings) {
+  return [
+    buildResizeFilter(settings, { forceEven: true }) || "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos",
+    "format=yuv420p10le"
+  ].join(",");
+}
+
+function buildAces2065Filter(settings) {
+  const matrix = SRGB_LINEAR_TO_ACES2065_MATRIX;
+  return [
+    buildResizeFilter(settings, { forceEven: false }),
+    "zscale=matrixin=bt709:transferin=iec61966-2-1:primariesin=bt709:matrix=gbr:transfer=linear:primaries=bt709:range=full",
+    "format=gbrpf32le",
+    [
+      "colorchannelmixer",
+      `rr=${matrix[0][0]}`,
+      `rg=${matrix[0][1]}`,
+      `rb=${matrix[0][2]}`,
+      `gr=${matrix[1][0]}`,
+      `gg=${matrix[1][1]}`,
+      `gb=${matrix[1][2]}`,
+      `br=${matrix[2][0]}`,
+      `bg=${matrix[2][1]}`,
+      `bb=${matrix[2][2]}`
+    ].join(":")
+  ].filter(Boolean).join(",");
+}
+
+function buildResizeFilter(settings, options = {}) {
+  const size = getRequestedOutputSize(settings);
+
+  if (!size) {
+    return null;
+  }
+
+  const width = options.forceEven ? Math.max(2, Math.floor(size.width / 2) * 2) : size.width;
+  const height = options.forceEven ? Math.max(2, Math.floor(size.height / 2) * 2) : size.height;
+  return `scale=${width}:${height}:flags=lanczos`;
+}
+
+function getRequestedOutputSize(settings) {
+  const outputSize = settings && settings.outputSize && typeof settings.outputSize === "object"
+    ? settings.outputSize
+    : null;
+
+  if (!outputSize || outputSize.mode !== "custom") {
+    return null;
+  }
+
+  return {
+    width: clampInteger(outputSize.width, 1, 16384, DEFAULT_SETTINGS.video.outputSize.width),
+    height: clampInteger(outputSize.height, 1, 16384, DEFAULT_SETTINGS.video.outputSize.height)
+  };
 }
 
 function getRequestedDurationSeconds(settings) {
@@ -949,6 +1124,21 @@ function uniqueOutputPath(outputDir, inputPath, extension, suffix = "") {
   return candidate;
 }
 
+function uniqueOutputDirectory(outputDir, inputPath, suffix = "") {
+  const parsed = path.parse(inputPath);
+  const safeName = sanitizeFileName(parsed.name) || "converted";
+  let candidate = path.join(outputDir, `${safeName}${suffix}`);
+  let index = 1;
+
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(outputDir, `${safeName}${suffix}_${index}`);
+    index += 1;
+  }
+
+  fs.mkdirSync(candidate, { recursive: true });
+  return candidate;
+}
+
 function sanitizeFileName(fileName) {
   return String(fileName || "").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
 }
@@ -1020,16 +1210,25 @@ function saveSettings(settings) {
 function sanitizeSettings(settings) {
   const incoming = settings && typeof settings === "object" ? settings : {};
   const incomingVideo = incoming.video && typeof incoming.video === "object" ? incoming.video : {};
-  const mode = incoming.mode === "video" ? "video" : "png";
+  const incomingOutputSize = incomingVideo.outputSize && typeof incomingVideo.outputSize === "object"
+    ? incomingVideo.outputSize
+    : {};
+  const mode = CONVERSION_MODES.has(incoming.mode) ? incoming.mode : "png";
   const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
   const durationMode = incomingVideo.durationMode === "custom" ? "custom" : "full";
+  const outputSizeMode = incomingOutputSize.mode === "custom" ? "custom" : "source";
 
   return {
     mode,
     outputDir,
     video: {
       durationMode,
-      durationSeconds: clampInteger(incomingVideo.durationSeconds, 1, 86400, DEFAULT_SETTINGS.video.durationSeconds)
+      durationSeconds: clampInteger(incomingVideo.durationSeconds, 1, 86400, DEFAULT_SETTINGS.video.durationSeconds),
+      outputSize: {
+        mode: outputSizeMode,
+        width: clampInteger(incomingOutputSize.width, 1, 16384, DEFAULT_SETTINGS.video.outputSize.width),
+        height: clampInteger(incomingOutputSize.height, 1, 16384, DEFAULT_SETTINGS.video.outputSize.height)
+      }
     }
   };
 }

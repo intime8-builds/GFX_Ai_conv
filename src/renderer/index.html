@@ -22,6 +22,7 @@
       <section class="toolbar" aria-label="Режим конвертации">
         <button class="mode-button active" type="button" data-mode="png">PNG</button>
         <button class="mode-button" type="button" data-mode="video">H.264 MP4</button>
+        <button class="mode-button" type="button" data-mode="aces">ACES2065-1 EXR</button>
       </section>
 
       <section class="controls">
@@ -29,6 +30,23 @@
           <label for="outputDir">Папка вывода</label>
           <input id="outputDir" type="text" readonly placeholder="Выберите папку перед добавлением файлов">
           <button id="chooseOutput" type="button">Выбрать</button>
+        </div>
+
+        <div class="resolution-settings">
+          <label class="checkline" for="sourceSizeInput">
+            <input id="sourceSizeInput" type="checkbox" checked>
+            <span>Исходное разрешение</span>
+          </label>
+
+          <label class="field" for="widthInput">
+            <span>Ширина</span>
+            <input id="widthInput" type="number" min="1" max="16384" step="1" value="1920" disabled>
+          </label>
+
+          <label class="field" for="heightInput">
+            <span>Высота</span>
+            <input id="heightInput" type="number" min="1" max="16384" step="1" value="1080" disabled>
+          </label>
         </div>
 
         <div class="video-settings hidden" id="videoSettings">
@@ -42,7 +60,7 @@
             <input id="durationInput" type="number" min="1" max="86400" step="1" value="4" disabled>
           </label>
 
-          <div class="fixed-spec">
+          <div class="fixed-spec" id="outputSpec">
             Lossless H.264 High10 · 10-bit MP4
           </div>
         </div>
@@ -100,12 +118,16 @@
             <p>Режим PNG сохраняет 16-битный PNG из первого читаемого кадра через sRGB-oriented RGB path. Для статичных файлов это обычная конвертация изображения, для видео берётся первый кадр.</p>
             <h3>H.264 MP4</h3>
             <p>Режим H.264 MP4 сохраняет lossless 10-bit H.264 High10 MP4 через CPU x264, без звука, с BT.709/sRGB-friendly метаданными цвета.</p>
+            <h3>ACES2065-1 EXR</h3>
+            <p>Режим ACES2065-1 EXR пишет half-float OpenEXR. Статичные файлы сохраняются одним .exr, видео и EXR-папки сохраняются как EXR-секвенция в отдельную папку.</p>
+            <h3>Разрешение</h3>
+            <p>По умолчанию используется исходное разрешение. Отключите Исходное разрешение и задайте ширину/высоту, если нужен конкретный output size. Для MP4 нечётные значения будут приведены к чётным пикселям.</p>
             <h3>Длина</h3>
             <p>По умолчанию включена полная длина исходника. Отключите Полная длина только если нужен конкретный хронометраж в секундах.</p>
             <h3>EXR-секвенции</h3>
             <p>Перетащите папку с непрерывной нумерацией, например shot_0001.exr, shot_0002.exr. Приложение читает EXR-секвенции как 24 fps.</p>
             <h3>Очередь</h3>
-            <p>Старт запускает ожидающие задачи. Пауза остановит очередь после текущего файла. Стоп убивает текущий FFmpeg-процесс. Очистить удаляет все элементы из очереди.</p>
+            <p>Старт запускает ожидающие задачи. Пауза остановит очередь после текущего файла. Стоп убивает текущий FFmpeg-процесс. Очистить удаляет все элементы из очереди. Повторить добавляет тот же исходник в конец очереди для новой конвертации.</p>
             <h3>Обновления</h3>
             <p>Обновления скачиваются и устанавливаются из окна приложения. Установщик запускается тихо, после установки приложение перезапускается.</p>
           </div>

@@ -29,6 +29,10 @@ const queueSummary = document.querySelector("#queueSummary");
 const videoSettings = document.querySelector("#videoSettings");
 const durationFullInput = document.querySelector("#durationFullInput");
 const durationInput = document.querySelector("#durationInput");
+const outputSpec = document.querySelector("#outputSpec");
+const sourceSizeInput = document.querySelector("#sourceSizeInput");
+const widthInput = document.querySelector("#widthInput");
+const heightInput = document.querySelector("#heightInput");
 const openOutputButton = document.querySelector("#openOutput");
 const startQueueButton = document.querySelector("#startQueue");
 const pauseQueueButton = document.querySelector("#pauseQueue");
@@ -160,6 +164,18 @@ function bindEvents() {
     durationInput.value = clampInteger(durationInput.value, 1, 86400, 4);
     saveCurrentSettings();
   });
+
+  sourceSizeInput.addEventListener("change", () => {
+    updateResolutionInputs();
+    saveCurrentSettings();
+  });
+
+  [widthInput, heightInput].forEach((input) => {
+    input.addEventListener("change", () => {
+      input.value = clampInteger(input.value, 1, 16384, input.id === "widthInput" ? 1920 : 1080);
+      saveCurrentSettings();
+    });
+  });
 }
 
 async function hydrateVersion() {
@@ -170,13 +186,18 @@ async function hydrateVersion() {
 async function hydrateSettings() {
   const settings = await window.gfxConv.getSettings();
   const video = settings.video || {};
+  const outputSize = video.outputSize || {};
 
   state.outputDir = settings.outputDir || "";
   outputDirInput.value = state.outputDir;
   durationFullInput.checked = video.durationMode !== "custom";
   durationInput.disabled = durationFullInput.checked;
   durationInput.value = clampInteger(video.durationSeconds, 1, 86400, 4);
-  setMode(settings.mode === "video" ? "video" : "png", false);
+  sourceSizeInput.checked = outputSize.mode !== "custom";
+  widthInput.value = clampInteger(outputSize.width, 1, 16384, 1920);
+  heightInput.value = clampInteger(outputSize.height, 1, 16384, 1080);
+  updateResolutionInputs();
+  setMode(["png", "video", "aces"].includes(settings.mode) ? settings.mode : "png", false);
 }
 
 async function addFiles(fileListLike) {
@@ -340,18 +361,32 @@ async function clearQueue() {
 function getSettings() {
   return {
     durationMode: durationFullInput.checked ? "full" : "custom",
-    durationSeconds: durationInput.value
+    durationSeconds: durationInput.value,
+    outputSize: {
+      mode: sourceSizeInput.checked ? "source" : "custom",
+      width: widthInput.value,
+      height: heightInput.value
+    }
   };
 }
 
 function setMode(mode, persist) {
-  state.mode = mode === "video" ? "video" : "png";
+  state.mode = ["png", "video", "aces"].includes(mode) ? mode : "png";
   modeButtons.forEach((item) => item.classList.toggle("active", item.dataset.mode === state.mode));
-  videoSettings.classList.toggle("hidden", state.mode !== "video");
+  videoSettings.classList.toggle("hidden", state.mode === "png");
+  outputSpec.textContent = state.mode === "aces"
+    ? "ACES2065-1 · half-float EXR"
+    : "Lossless H.264 High10 · 10-bit MP4";
 
   if (persist) {
     saveCurrentSettings();
   }
+}
+
+function updateResolutionInputs() {
+  const disabled = sourceSizeInput.checked;
+  widthInput.disabled = disabled;
+  heightInput.disabled = disabled;
 }
 
 async function saveCurrentSettings() {
@@ -394,6 +429,7 @@ function renderFileList() {
     const action = file.outputPath
       ? `<button type="button" data-open="${escapeHtml(file.outputPath)}">Открыть</button>`
       : "";
+    const requeueAction = `<button type="button" data-requeue="${escapeHtml(file.id)}">Повторить</button>`;
     const statusLabel = STATUS_LABELS[file.status] || file.status;
 
     return `
@@ -410,7 +446,10 @@ function renderFileList() {
           </div>
         </div>
         <span class="pill ${escapeHtml(file.status)}">${escapeHtml(statusLabel)}</span>
-        ${action}
+        <div class="item-actions">
+          ${action}
+          ${requeueAction}
+        </div>
       </li>
     `;
   }).join("");
@@ -420,6 +459,36 @@ function renderFileList() {
       window.gfxConv.openPath(button.dataset.open);
     });
   });
+
+  fileList.querySelectorAll("[data-requeue]").forEach((button) => {
+    button.addEventListener("click", () => {
+      requeueItem(button.dataset.requeue);
+    });
+  });
+}
+
+function requeueItem(id) {
+  const item = findItem(id);
+
+  if (!item) {
+    return;
+  }
+
+  const nextItem = {
+    id: crypto.randomUUID(),
+    path: item.path,
+    name: item.name,
+    status: "queued",
+    progress: 0,
+    previewUrl: item.previewUrl || ""
+  };
+
+  state.items.push(nextItem);
+  renderFileList();
+
+  if (!nextItem.previewUrl) {
+    hydratePreviews([nextItem]);
+  }
 }
 
 function renderButtons() {
