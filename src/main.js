@@ -30,7 +30,7 @@ const DEFAULT_SETTINGS = {
   video: {
     durationMode: "full",
     durationSeconds: 4,
-    colorSpace: "srgb",
+    colorSpace: "aces2065",
     outputSize: {
       mode: "source",
       width: 1920,
@@ -1103,7 +1103,7 @@ function sanitizeSettings(settings) {
   const mode = CONVERSION_MODES.has(incoming.mode) ? incoming.mode : "png";
   const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
   const durationMode = incomingVideo.durationMode === "custom" ? "custom" : "full";
-  const colorSpace = incomingVideo.colorSpace === "aces2065" ? "aces2065" : "srgb";
+  const colorSpace = incomingVideo.colorSpace === "srgb" ? "srgb" : "aces2065";
   const outputSizeMode = incomingOutputSize.mode === "custom" ? "custom" : "source";
 
   return {

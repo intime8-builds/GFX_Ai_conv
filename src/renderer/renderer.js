@@ -199,7 +199,7 @@ async function hydrateSettings() {
   durationFullInput.checked = video.durationMode !== "custom";
   durationInput.disabled = durationFullInput.checked;
   durationInput.value = clampInteger(video.durationSeconds, 1, 86400, 4);
-  colorSpaceInput.value = video.colorSpace === "aces2065" ? "aces2065" : "srgb";
+  colorSpaceInput.value = video.colorSpace === "srgb" ? "srgb" : "aces2065";
   sourceSizeInput.checked = outputSize.mode !== "custom";
   widthInput.value = clampInteger(outputSize.width, 1, 16384, 1920);
   heightInput.value = clampInteger(outputSize.height, 1, 16384, 1080);
