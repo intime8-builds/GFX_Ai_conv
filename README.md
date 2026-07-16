@@ -1,137 +1,137 @@
 # GFX Ai Conv
 
-Local Windows converter with a small drag-and-drop interface.
+Локальный Windows-конвертер с простым drag-and-drop интерфейсом.
 
-## Modes
+## Режимы
 
-- **PNG**: converts supported image/video sources to 16-bit `.png` in an sRGB-oriented RGB output path.
-- **H.264 MP4**: converts supported video sources to lossless 10-bit H.264 High 10 `.mp4`, BT.709/sRGB-friendly color metadata, full source duration by default, or a custom duration when set.
-- **EXR folders**: in H.264 MP4 mode, a dropped folder with numbered `.exr` files is treated as an image sequence.
+- **PNG**: конвертирует поддерживаемые изображения/видео в 16-битный `.png` через sRGB-oriented RGB output path.
+- **H.264 MP4**: конвертирует поддерживаемые видео в lossless 10-bit H.264 High 10 `.mp4` с BT.709/sRGB-friendly метаданными цвета. По умолчанию используется полная длина исходника, но можно задать свою длину в секундах.
+- **EXR-папки**: в режиме H.264 MP4 папка с нумерованными `.exr` файлами воспринимается как секвенция и читается как 24 fps.
 
-FFmpeg is bundled with the app through `ffmpeg-static`.
+FFmpeg поставляется вместе с приложением через `ffmpeg-static`.
 
-## Saved Settings
+## Сохранение Настроек
 
-The app saves settings automatically when you change them:
+Приложение автоматически сохраняет настройки при изменении:
 
-- selected mode: `PNG` or `H.264 MP4`
-- output folder
-- video duration mode: full or custom seconds
+- выбранный режим: `PNG` или `H.264 MP4`
+- папка вывода
+- режим длины видео: полная длина или свои секунды
 
-Settings are stored locally at:
+Настройки хранятся здесь:
 
 ```text
 %LOCALAPPDATA%\GFX Ai Conv\settings.json
 ```
 
-Crash logs are stored at:
+Логи падений хранятся здесь:
 
 ```text
 %LOCALAPPDATA%\GFX Ai Conv\logs
 ```
 
-## Queue Workflow
+## Очередь
 
-1. Choose an output folder.
-2. Drop files or numbered EXR sequence folders into the app.
-3. Check previews and queue status.
-4. Press `Start`.
+1. Выберите папку вывода.
+2. Перетащите файлы или папки с нумерованными EXR-секвенциями в приложение.
+3. Проверьте превью и статус очереди.
+4. Нажмите `Старт`.
 
-The queue supports:
+Кнопки очереди:
 
-- `Start`: begins converting queued items.
-- `Pause`: pauses the queue after the current item finishes.
-- `Stop`: stops the active FFmpeg process and marks waiting items as stopped.
-- `Clear`: empties the queue.
+- `Старт`: запускает ожидающие элементы.
+- `Пауза`: останавливает очередь после текущего элемента.
+- `Стоп`: останавливает текущий FFmpeg-процесс и помечает ожидающие элементы как остановленные.
+- `Очистить`: очищает очередь.
 
-Each queue item shows a preview, current status, output path or error, and percent progress.
+Каждый элемент очереди показывает превью, текущий статус, путь результата или ошибку, а также прогресс в процентах.
 
-## Local Development
+## Локальная Разработка
 
 ```powershell
 npm.cmd install
 npm.cmd run dev
 ```
 
-## Build Locally
+## Локальная Сборка
 
 ```powershell
 npm.cmd run dist
 ```
 
-The Windows installer and unpacked zip are written to `dist/`.
+Windows installer и unpacked zip будут записаны в `dist/`.
 
 ## GitHub Release Build
 
-Push a version tag to build a release automatically:
+Чтобы собрать релиз автоматически, отправьте version tag:
 
 ```powershell
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub Actions will build the Windows installer `.exe` and unpacked `.zip`, then attach them to a GitHub Release.
+GitHub Actions соберёт Windows installer `.exe` и unpacked `.zip`, затем прикрепит их к GitHub Release.
 
-## Updates
+## Обновления
 
-The app checks the latest GitHub Release at startup and from the `Updates` button. Updates are downloaded inside the app, installed silently, and the app relaunches after installation.
+Приложение проверяет последний GitHub Release при запуске и по кнопке `Обновления`. Обновление скачивается внутри приложения, устанавливается тихо, затем приложение перезапускается.
 
 ## Windows Downloads
 
-- Use the `installer` `.exe` for normal installation. This is the recommended team build.
-- If a `win.zip` build is provided, extract the whole archive to a normal folder before running `GFX Ai Conv.exe`.
+- Для обычной установки используйте `installer` `.exe`. Это рекомендованный вариант для команды.
+- Если доступен `win.zip`, распакуйте весь архив в обычную папку перед запуском `GFX Ai Conv.exe`.
 
-Do not run `GFX Ai Conv.exe` directly from WinRAR/7-Zip preview. That launches the app from a temporary folder such as `Rar$EXa...` without all required Electron resources and can crash before the app code starts.
+Не запускайте `GFX Ai Conv.exe` прямо из предпросмотра WinRAR/7-Zip. В таком режиме приложение стартует из временной папки вроде `Rar$EXa...` без всех нужных Electron-ресурсов и может закрыться до запуска кода приложения.
 
-The Electron portable self-extracting target is intentionally not used because it can crash on some Windows systems when launched from a temporary extraction folder.
+Portable self-extracting target намеренно не используется, потому что на некоторых Windows-системах он может падать при запуске из временной папки.
 
 ## Notes
 
-Video output is fixed to lossless H.264 High10 with CRF 0. Files can become much larger and may be less convenient for downstream tools, but this matches the final output requirement.
+Видео фиксировано рендерится в lossless H.264 High10 с CRF 0. Файлы могут быть заметно больше и не всегда удобны для downstream tools, но это соответствует финальному техническому требованию.
 
 ## FAQ
 
-### Which file should I download?
+### Какой файл скачивать?
 
-Use the `installer` `.exe` for the normal app install. This is the recommended option.
+Для обычной установки используйте `installer` `.exe`. Это рекомендованный вариант.
 
-### Why is there no portable `.exe` anymore?
+### Почему больше нет portable `.exe`?
 
-The Electron portable self-extracting build can crash on some Windows systems because it runs from a temporary extraction folder. The app now ships as an installer plus an unpacked zip, which is more reliable.
+Electron portable self-extracting сборка может падать на некоторых Windows-системах, потому что запускается из временной папки. Сейчас приложение поставляется как installer плюс unpacked zip, это надёжнее.
 
-### Why can the zip crash when I double-click the exe inside WinRAR?
+### Почему zip может падать, если открыть exe прямо внутри WinRAR?
 
-Electron apps need the executable and the `resources` folder together. Archive preview tools often launch only the selected `.exe` from a temporary folder. Extract the full archive first, or use the installer.
+Electron-приложению нужен сам `.exe` и папка `resources` рядом с ним. Архиваторы в режиме предпросмотра часто запускают только выбранный `.exe` из временной папки. Сначала распакуйте архив полностью или используйте installer.
 
-### Does the app stay in the tray?
+### Приложение остаётся в трее?
 
-Yes. Closing or minimizing the window hides it to the system tray. Use the tray menu to open the window, open the saved output folder, check updates, or quit the app completely.
+Да. Закрытие или сворачивание окна прячет приложение в системный трей. Через меню трея можно открыть окно, открыть сохранённую папку вывода, проверить обновления или полностью выйти из приложения.
 
-### Where are converted files saved?
+### Куда сохраняются конвертированные файлы?
 
-Converted files are saved to the output folder selected in the app. The selected folder is saved automatically and restored on the next launch.
+Файлы сохраняются в папку вывода, выбранную в приложении. Папка сохраняется автоматически и восстанавливается при следующем запуске.
 
-### Does the app overwrite existing files?
+### Приложение перезаписывает существующие файлы?
 
-No. If a file with the same output name already exists, the app adds a numeric suffix such as `_1`, `_2`, and so on.
+Нет. Если файл с таким именем уже есть, приложение добавляет числовой суффикс, например `_1`, `_2` и так далее.
 
-### What does PNG mode do?
+### Что делает режим PNG?
 
-PNG mode takes the first video/image frame FFmpeg can read and writes it as 16-bit `.png` using `rgba64be`. For static image sources, this is the normal image conversion path. For video sources, it exports the first frame.
+Режим PNG берёт первый читаемый FFmpeg кадр из изображения или видео и сохраняет его как 16-битный `.png` через `rgba64be`. Для статичных изображений это обычная конвертация, для видео это экспорт первого кадра.
 
-### What does H.264 MP4 mode do?
+### Что делает режим H.264 MP4?
 
-H.264 MP4 mode writes `.mp4` files with `libx264`, H.264 High 10 profile, `yuv420p10le`, BT.709 color metadata, and an sRGB transfer tag. Full duration is used by default. If custom duration is enabled, the app loops short inputs if needed and trims the result to the selected number of seconds.
+Режим H.264 MP4 пишет `.mp4` через `libx264`, H.264 High 10 profile, `yuv420p10le`, BT.709 color metadata и sRGB transfer tag. По умолчанию используется полная длина. Если включена своя длина, приложение зациклит короткий исходник при необходимости и обрежет результат до выбранного количества секунд.
 
-### Is Duration measured in seconds?
+### Длина измеряется в секундах?
 
-Yes. Full duration is enabled by default. When custom duration is enabled, the field is measured in seconds.
+Да. По умолчанию включена полная длина исходника. Если отключить `Полная длина`, поле `Своя длина (сек)` задаёт длительность в секундах.
 
-### Can I drop an EXR sequence folder?
+### Можно перетащить папку с EXR-секвенцией?
 
-Yes. In H.264 MP4 mode, drop the folder that contains the numbered `.exr` sequence. The app uses the largest numbered EXR sequence in that folder and converts it to MP4.
+Да. В режиме H.264 MP4 перетащите папку с нумерованной `.exr` секвенцией. Приложение выберет самую длинную нумерованную EXR-секвенцию в этой папке и сконвертирует её в MP4.
 
-Supported naming examples:
+Примеры поддерживаемых имён:
 
 ```text
 shot_0001.exr
@@ -139,29 +139,29 @@ shot_0002.exr
 shot_0003.exr
 ```
 
-The sequence must be continuous. If a frame is missing, the app reports the missing frame number instead of silently making a broken video.
+Секвенция должна быть непрерывной. Если кадр пропущен, приложение покажет номер пропущенного кадра вместо молчаливой сборки битого видео.
 
-EXR folders are read at 25 fps. Full duration uses the full sequence. Custom duration loops or trims the sequence to the selected seconds.
+EXR-папки читаются как 24 fps. Полная длина использует всю секвенцию. Своя длина зацикливает или обрезает секвенцию до выбранных секунд.
 
-### Is H.264 truly lossless?
+### H.264 действительно lossless?
 
-Yes, the app uses CRF 0 in High 10 mode for video output. Files can become much larger and may not be accepted by every downstream tool.
+Да, приложение использует CRF 0 в High 10 mode для видео. Файлы могут стать сильно больше и могут приниматься не всеми downstream tools.
 
-### Does the app keep audio?
+### Приложение сохраняет звук?
 
-No. H.264 MP4 mode currently exports video only and removes audio.
+Нет. Режим H.264 MP4 сейчас экспортирует только видео и удаляет аудио.
 
-### How do updates work?
+### Как работают обновления?
 
-The app checks the latest GitHub Release on startup and when you press `Updates`. If a newer installer exists, the app shows an update window inside the app. Press `Download and install` to download the installer, run silent installation, and relaunch the app without opening GitHub in the browser.
+Приложение проверяет последний GitHub Release при запуске и при нажатии `Обновления`. Если есть новый installer, приложение показывает окно обновления. Нажмите `Скачать и установить`, чтобы скачать installer, запустить тихую установку и перезапустить приложение без перехода на GitHub в браузере.
 
-### Why can't I add files before choosing an output folder?
+### Почему нельзя добавить файлы до выбора папки вывода?
 
-The app needs a destination before building the queue, so the drop zone is visually blocked until an output folder is selected.
+Приложению нужен путь назначения до формирования очереди, поэтому drop-zone визуально заблокирована, пока папка вывода не выбрана.
 
-### How do I make a new release?
+### Как сделать новый релиз?
 
-Update `package.json`, commit the changes, create a tag, and push it:
+Обновите `package.json`, закоммитьте изменения, создайте tag и отправьте его:
 
 ```powershell
 git tag v0.1.2
@@ -169,23 +169,23 @@ git push origin main
 git push origin v0.1.2
 ```
 
-If the GitHub Actions workflow is enabled, GitHub builds the Windows files automatically. If the workflow has not been pushed yet, build locally with `npm.cmd run dist` and upload the files in `dist/` to a GitHub Release.
+Если GitHub Actions workflow включён, GitHub соберёт Windows-файлы автоматически. Если workflow ещё не запушен, соберите локально через `npm.cmd run dist` и загрузите файлы из `dist/` в GitHub Release.
 
-### Why is the workflow file not pushed sometimes?
+### Почему workflow-файл иногда не пушится?
 
-GitHub requires the CLI token to have the `workflow` scope before it can push `.github/workflows/*.yml`. Refresh it once:
+GitHub требует, чтобы CLI token имел `workflow` scope для пуша `.github/workflows/*.yml`. Один раз обновите scope:
 
 ```powershell
 gh auth refresh -h github.com -s workflow
 git push
 ```
 
-### What should I do if the app closes immediately?
+### Что делать, если приложение сразу закрывается?
 
-Use the latest release and prefer the installer or `win.zip`. If it still closes, check:
+Используйте последний release и предпочитайте installer или `win.zip`. Если приложение всё равно закрывается, проверьте:
 
 ```text
 %LOCALAPPDATA%\GFX Ai Conv\logs
 ```
 
-Also check Windows Event Viewer under `Windows Logs > Application`.
+Также проверьте Windows Event Viewer в разделе `Windows Logs > Application`.

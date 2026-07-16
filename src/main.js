@@ -10,6 +10,7 @@ const ffmpegStaticPath = require("ffmpeg-static");
 
 const REPO_OWNER = "intime8";
 const REPO_NAME = "GFX_Ai_conv";
+const SEQUENCE_FPS = 24;
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD4SURBVFhH7ZSxEYJQFATpwrbogw5sQKvAwBJISYwowIyMkMAavgwc3hcOxuS+ge7MJnrOPnU0+zNzKE4hpcgSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNdq3DJc+LGjDUW7XIkvUaNNzEzok30lyQPTO+ybk0XN53SQ44Nqi/vm7VSJL1EiZ14+pf6+mx14HTXR1uXqNElmiRsqvH7D1FcyH+Q8oqnAbUwPzpzCY8IDoaxAkOWBU/RcsfpZ7IkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyP0+WPQGxDZvikCMZ/QAAAABJRU5ErkJggg==";
 const appDataRoot = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
 const stableUserDataPath = path.join(appDataRoot, "GFX Ai Conv");
@@ -38,7 +39,7 @@ fs.mkdirSync(updatesDir, { recursive: true });
 
 process.on("uncaughtException", (error) => {
   writeCrashLog("uncaughtException", error);
-  dialog.showErrorBox("GFX Ai Conv crashed", error.stack || error.message || String(error));
+  dialog.showErrorBox("GFX Ai Conv: ошибка запуска", error.stack || error.message || String(error));
   app.quit();
 });
 
@@ -147,7 +148,7 @@ app.on("window-all-closed", () => {
 
 ipcMain.handle("dialog:chooseOutputDir", async () => {
   const result = await dialog.showOpenDialog({
-    title: "Choose output folder",
+    title: "Выберите папку вывода",
     properties: ["openDirectory", "createDirectory"]
   });
 
@@ -192,11 +193,11 @@ ipcMain.handle("updates:downloadAndInstall", async (event) => {
   const result = await checkForUpdates();
 
   if (!result.ok) {
-    throw new Error(result.error || "Update check failed.");
+    throw new Error(result.error || "Не удалось проверить обновления.");
   }
 
   if (!result.hasUpdate || !result.installerAsset) {
-    return { ok: true, installed: false, message: "No installer update is available." };
+    return { ok: true, installed: false, message: "Нет доступного установщика обновления." };
   }
 
   const installerPath = await downloadUpdateInstaller(result.installerAsset, event.sender);
@@ -260,22 +261,22 @@ ipcMain.handle("convert:file", async (event, payload) => {
   const settings = payload && payload.settings ? payload.settings : {};
 
   if (!file || !file.path) {
-    throw new Error("Input file is missing.");
+    throw new Error("Не указан входной файл.");
   }
 
   if (!outputDir || !fs.existsSync(outputDir)) {
-    throw new Error("Output folder does not exist.");
+    throw new Error("Папка вывода не существует.");
   }
 
   if (!["png", "video"].includes(mode)) {
-    throw new Error("Unknown conversion mode.");
+    throw new Error("Неизвестный режим конвертации.");
   }
 
   const id = file.id;
   const inputPath = file.path;
 
   if (!fs.existsSync(inputPath)) {
-    throw new Error("Input file does not exist.");
+    throw new Error("Входной файл не существует.");
   }
 
   event.sender.send("convert:progress", { id, inputPath, progress: 0, status: "converting" });
@@ -295,11 +296,11 @@ ipcMain.handle("convert:files", async (event, payload) => {
   const settings = payload.settings || {};
 
   if (!outputDir || !fs.existsSync(outputDir)) {
-    throw new Error("Output folder does not exist.");
+    throw new Error("Папка вывода не существует.");
   }
 
   if (!["png", "video"].includes(mode)) {
-    throw new Error("Unknown conversion mode.");
+    throw new Error("Неизвестный режим конвертации.");
   }
 
   const results = [];
@@ -309,7 +310,7 @@ ipcMain.handle("convert:files", async (event, payload) => {
     const id = file.id;
 
     if (!inputPath || !fs.existsSync(inputPath)) {
-      const errorResult = { id, inputPath, status: "error", error: "Input file does not exist." };
+      const errorResult = { id, inputPath, status: "error", error: "Входной файл не существует." };
       event.sender.send("convert:progress", errorResult);
       results.push(errorResult);
       continue;
@@ -352,12 +353,12 @@ async function checkForUpdates() {
         ok: true,
         hasUpdate: false,
         currentVersion,
-        message: "No GitHub Releases yet."
+        message: "В GitHub Releases пока нет релизов."
       };
     }
 
     if (!response.ok) {
-      throw new Error(`GitHub responded with ${response.status}`);
+      throw new Error(`GitHub вернул статус ${response.status}`);
     }
 
     const release = await response.json();
@@ -392,7 +393,7 @@ async function checkForUpdates() {
 
 async function downloadUpdateInstaller(asset, sender) {
   if (!asset || !asset.downloadUrl || !asset.name) {
-    throw new Error("Installer asset is missing from the latest release.");
+    throw new Error("В последнем релизе нет файла установщика.");
   }
 
   const response = await fetch(asset.downloadUrl, {
@@ -402,7 +403,7 @@ async function downloadUpdateInstaller(asset, sender) {
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`Installer download failed with ${response.status}.`);
+    throw new Error(`Не удалось скачать установщик. Статус: ${response.status}.`);
   }
 
   const totalBytes = Number(response.headers.get("content-length")) || asset.size || 0;
@@ -492,11 +493,11 @@ function createTray() {
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     {
-      label: "Open",
+      label: "Открыть",
       click: showMainWindow
     },
     {
-      label: "Open output folder",
+      label: "Открыть папку вывода",
       click: () => {
         const outputDir = loadSettings().outputDir;
 
@@ -508,12 +509,12 @@ function buildTrayMenu() {
         dialog.showMessageBox({
           type: "info",
           title: "GFX Ai Conv",
-          message: "Output folder is not set yet."
+          message: "Папка вывода пока не выбрана."
         });
       }
     },
     {
-      label: "Check updates",
+      label: "Проверить обновления",
       click: async () => {
         const result = await checkForUpdates();
 
@@ -521,9 +522,9 @@ function buildTrayMenu() {
           const answer = await dialog.showMessageBox({
             type: "info",
             title: "GFX Ai Conv",
-            message: `${result.releaseName || result.latestVersion} is available.`,
-            detail: "Download the installer and launch it now?",
-            buttons: ["Download", "Later"],
+            message: `Доступна версия ${result.releaseName || result.latestVersion}.`,
+            detail: "Скачать установщик и запустить установку сейчас?",
+            buttons: ["Скачать", "Позже"],
             defaultId: 0,
             cancelId: 1
           });
@@ -541,13 +542,13 @@ function buildTrayMenu() {
         dialog.showMessageBox({
           type: result.ok ? "info" : "warning",
           title: "GFX Ai Conv",
-          message: result.ok ? "You are on the latest version." : `Update check failed: ${result.error}`
+          message: result.ok ? "Установлена последняя версия." : `Не удалось проверить обновления: ${result.error}`
         });
       }
     },
     { type: "separator" },
     {
-      label: "Quit",
+      label: "Выйти",
       click: () => {
         isQuitting = true;
         app.quit();
@@ -694,7 +695,7 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
     "-y",
     ...buildDurationInputArgs(duration),
     "-framerate",
-    "25",
+    String(SEQUENCE_FPS),
     "-start_number",
     String(sequence.startNumber),
     "-i",
@@ -725,7 +726,7 @@ async function convertDirectory(inputPath, outputDir, mode, settings, progress =
 
   await runFfmpeg(withProgressArgs(args), {
     ...progress,
-    durationSeconds: duration || sequence.frameCount / 25
+    durationSeconds: duration || sequence.frameCount / SEQUENCE_FPS
   });
   return outputPath;
 }
@@ -809,7 +810,7 @@ function runFfmpeg(args, progress = {}) {
       }
 
       if (cancelled) {
-        reject(new Error("Conversion stopped."));
+        reject(new Error("Конвертация остановлена."));
         return;
       }
 
@@ -818,7 +819,7 @@ function runFfmpeg(args, progress = {}) {
         return;
       }
 
-      reject(new Error(compactFfmpegError(stderr) || `FFmpeg exited with code ${code}.`));
+      reject(new Error(compactFfmpegError(stderr) || `FFmpeg завершился с кодом ${code}.`));
     });
   });
 }
@@ -847,7 +848,7 @@ function findExrSequence(directoryPath) {
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exr"));
 
   if (entries.length === 0) {
-    throw new Error("The folder does not contain EXR files.");
+    throw new Error("В папке нет EXR-файлов.");
   }
 
   const groups = new Map();
@@ -879,7 +880,7 @@ function findExrSequence(directoryPath) {
     .sort((left, right) => right.frames.length - left.frames.length)[0];
 
   if (!sequence || sequence.frames.length === 0) {
-    throw new Error("EXR files need numbered names, for example shot_0001.exr.");
+    throw new Error("EXR-файлы должны быть пронумерованы, например shot_0001.exr.");
   }
 
   const frames = sequence.frames
@@ -891,7 +892,7 @@ function findExrSequence(directoryPath) {
     const expected = startNumber + index;
 
     if (frames[index].number !== expected) {
-      throw new Error(`EXR sequence has a gap at frame ${expected}.`);
+      throw new Error(`В EXR-секвенции пропущен кадр ${expected}.`);
     }
   }
 

@@ -8,6 +8,15 @@ const state = {
   activeId: null
 };
 
+const STATUS_LABELS = {
+  queued: "в очереди",
+  paused: "пауза",
+  converting: "конвертация",
+  done: "готово",
+  error: "ошибка",
+  stopped: "остановлено"
+};
+
 const modeButtons = document.querySelectorAll(".mode-button");
 const outputDirInput = document.querySelector("#outputDir");
 const chooseOutputButton = document.querySelector("#chooseOutput");
@@ -65,9 +74,9 @@ async function init() {
 
   window.gfxConv.onUpdateDownloadProgress((update) => {
     if (update.phase === "installing") {
-      updateBody.textContent = "Installing update silently. The app will restart automatically.";
+      updateBody.textContent = "Устанавливаю обновление в тихом режиме. Приложение перезапустится автоматически.";
       updateProgressFill.style.width = "100%";
-      updateProgressText.textContent = "Installing";
+      updateProgressText.textContent = "Установка";
       return;
     }
 
@@ -99,7 +108,7 @@ function bindEvents() {
 
   openOutputButton.addEventListener("click", () => {
     if (!state.outputDir) {
-      showToast("Choose an output folder first.");
+      showToast("Сначала выберите папку вывода.");
       return;
     }
 
@@ -146,6 +155,7 @@ function bindEvents() {
     durationInput.disabled = durationFullInput.checked;
     saveCurrentSettings();
   });
+
   durationInput.addEventListener("change", () => {
     durationInput.value = clampInteger(durationInput.value, 1, 86400, 4);
     saveCurrentSettings();
@@ -171,7 +181,7 @@ async function hydrateSettings() {
 
 async function addFiles(fileListLike) {
   if (!state.outputDir) {
-    showToast("Choose output folder first.");
+    showToast("Сначала выберите папку вывода.");
     updateDropzoneState();
     return;
   }
@@ -188,7 +198,7 @@ async function addFiles(fileListLike) {
     .filter((file) => file.path);
 
   if (files.length === 0) {
-    showToast("No readable files were added.");
+    showToast("Не удалось добавить читаемые файлы.");
     return;
   }
 
@@ -219,7 +229,7 @@ async function hydratePreviews(files) {
 
 async function startQueue() {
   if (!state.outputDir) {
-    showToast("Choose output folder first.");
+    showToast("Сначала выберите папку вывода.");
     return;
   }
 
@@ -230,7 +240,7 @@ async function startQueue() {
   }
 
   if (!state.items.some((item) => item.status === "queued" || item.status === "paused")) {
-    showToast("Queue is empty.");
+    showToast("Очередь пуста.");
     return;
   }
 
@@ -261,7 +271,7 @@ async function startQueue() {
       Object.assign(item, result);
     } catch (error) {
       item.status = state.stopping ? "stopped" : "error";
-      item.error = error.message || "Conversion failed.";
+      item.error = error.message || "Конвертация не удалась.";
     } finally {
       state.activeId = null;
       renderFileList();
@@ -287,7 +297,7 @@ function pauseQueue() {
   }
 
   state.paused = true;
-  showToast("Queue will pause after the current item.");
+  showToast("Очередь остановится после текущего файла.");
   renderFileList();
 }
 
@@ -352,7 +362,7 @@ async function saveCurrentSettings() {
       video: getSettings()
     });
   } catch (error) {
-    showToast(error.message || "Settings were not saved.");
+    showToast(error.message || "Настройки не сохранены.");
   }
 }
 
@@ -360,10 +370,10 @@ function updateDropzoneState() {
   const ready = Boolean(state.outputDir);
   dropzone.classList.toggle("disabled", !ready);
   filePicker.disabled = !ready;
-  dropTitle.textContent = ready ? "Drop files or EXR folders here" : "Choose output folder first";
+  dropTitle.textContent = ready ? "Перетащите файлы или EXR-папки сюда" : "Сначала выберите папку вывода";
   dropSubtitle.textContent = ready
-    ? "Items are added to the queue; press Start to convert"
-    : "Files cannot be added until an output folder is selected";
+    ? "Элементы добавятся в очередь; нажмите Старт для конвертации"
+    : "Файлы нельзя добавить, пока не выбрана папка вывода";
 }
 
 function renderFileList() {
@@ -371,7 +381,7 @@ function renderFileList() {
   renderButtons();
 
   if (state.items.length === 0) {
-    fileList.innerHTML = `<li class="empty-queue">No items in queue</li>`;
+    fileList.innerHTML = `<li class="empty-queue">В очереди нет элементов</li>`;
     return;
   }
 
@@ -380,10 +390,11 @@ function renderFileList() {
     const progress = Number.isFinite(file.progress) ? file.progress : 0;
     const preview = file.previewUrl
       ? `<img class="preview" src="${escapeHtml(file.previewUrl)}" alt="">`
-      : `<div class="preview placeholder">PREV</div>`;
+      : `<div class="preview placeholder">ПРЕВЬЮ</div>`;
     const action = file.outputPath
-      ? `<button type="button" data-open="${escapeHtml(file.outputPath)}">Open</button>`
+      ? `<button type="button" data-open="${escapeHtml(file.outputPath)}">Открыть</button>`
       : "";
+    const statusLabel = STATUS_LABELS[file.status] || file.status;
 
     return `
       <li class="file-item">
@@ -398,7 +409,7 @@ function renderFileList() {
             <span>${progress}%</span>
           </div>
         </div>
-        <span class="pill ${escapeHtml(file.status)}">${escapeHtml(file.status)}</span>
+        <span class="pill ${escapeHtml(file.status)}">${escapeHtml(statusLabel)}</span>
         ${action}
       </li>
     `;
@@ -422,13 +433,13 @@ function renderButtons() {
 
 function buildQueueSummary() {
   if (state.items.length === 0) {
-    return "0 items";
+    return "0 элементов";
   }
 
   const done = state.items.filter((item) => item.status === "done").length;
-  const active = state.items.some((item) => item.status === "converting") ? " · converting" : "";
-  const paused = state.paused ? " · pause pending" : "";
-  return `${done}/${state.items.length} done${active}${paused}`;
+  const active = state.items.some((item) => item.status === "converting") ? " · идёт конвертация" : "";
+  const paused = state.paused ? " · пауза после текущего файла" : "";
+  return `${done}/${state.items.length} готово${active}${paused}`;
 }
 
 async function checkUpdates(showNoUpdate) {
@@ -439,7 +450,7 @@ async function checkUpdates(showNoUpdate) {
 
     if (!result.ok) {
       if (showNoUpdate) {
-        showToast(`Update check failed: ${result.error}`);
+        showToast(`Не удалось проверить обновления: ${result.error}`);
       }
       return;
     }
@@ -451,7 +462,7 @@ async function checkUpdates(showNoUpdate) {
     }
 
     if (showNoUpdate) {
-      showToast("You are on the latest version.");
+      showToast("Установлена последняя версия.");
     }
   } finally {
     updateButton.disabled = false;
@@ -459,8 +470,8 @@ async function checkUpdates(showNoUpdate) {
 }
 
 function showUpdateModal(result) {
-  updateTitle.textContent = `${result.releaseName || result.latestVersion} is available`;
-  updateBody.textContent = `Current version: ${result.currentVersion}. New version: ${result.latestVersion}. The installer will download, install silently, and relaunch the app.`;
+  updateTitle.textContent = `Доступна версия ${result.releaseName || result.latestVersion}`;
+  updateBody.textContent = `Текущая версия: ${result.currentVersion}. Новая версия: ${result.latestVersion}. Установщик скачается, установится в тихом режиме и перезапустит приложение.`;
   updateProgressWrap.classList.add("hidden");
   updateProgressFill.style.width = "0%";
   updateProgressText.textContent = "0%";
@@ -481,7 +492,7 @@ async function downloadAndInstallUpdate() {
 
   downloadUpdateButton.disabled = true;
   closeUpdateModalButton.disabled = true;
-  updateBody.textContent = "Downloading update...";
+  updateBody.textContent = "Скачиваю обновление...";
   updateProgressWrap.classList.remove("hidden");
 
   try {
@@ -489,7 +500,7 @@ async function downloadAndInstallUpdate() {
   } catch (error) {
     downloadUpdateButton.disabled = false;
     closeUpdateModalButton.disabled = false;
-    showToast(error.message || "Update install failed.");
+    showToast(error.message || "Не удалось установить обновление.");
   }
 }
 

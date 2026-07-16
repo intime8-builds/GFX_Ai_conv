@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,34 +11,34 @@
       <header class="topbar">
         <div>
           <h1>GFX Ai Conv</h1>
-          <p id="versionLabel">Local converter</p>
+          <p id="versionLabel">Локальный конвертер</p>
         </div>
         <div class="top-actions">
-          <button id="faqButton" title="Open FAQ" type="button">FAQ</button>
-          <button id="updateButton" title="Check for updates" type="button">Updates</button>
+          <button id="faqButton" title="Открыть FAQ" type="button">FAQ</button>
+          <button id="updateButton" title="Проверить обновления" type="button">Обновления</button>
         </div>
       </header>
 
-      <section class="toolbar" aria-label="Conversion mode">
+      <section class="toolbar" aria-label="Режим конвертации">
         <button class="mode-button active" type="button" data-mode="png">PNG</button>
         <button class="mode-button" type="button" data-mode="video">H.264 MP4</button>
       </section>
 
       <section class="controls">
         <div class="output-row">
-          <label for="outputDir">Output folder</label>
-          <input id="outputDir" type="text" readonly placeholder="Choose a folder before adding files">
-          <button id="chooseOutput" type="button">Choose</button>
+          <label for="outputDir">Папка вывода</label>
+          <input id="outputDir" type="text" readonly placeholder="Выберите папку перед добавлением файлов">
+          <button id="chooseOutput" type="button">Выбрать</button>
         </div>
 
         <div class="video-settings hidden" id="videoSettings">
           <label class="checkline" for="durationFullInput">
             <input id="durationFullInput" type="checkbox" checked>
-            <span>Full duration</span>
+            <span>Полная длина</span>
           </label>
 
           <label class="field" for="durationInput">
-            <span>Custom duration (sec)</span>
+            <span>Своя длина (сек)</span>
             <input id="durationInput" type="number" min="1" max="86400" step="1" value="4" disabled>
           </label>
 
@@ -51,23 +51,23 @@
       <section class="dropzone disabled" id="dropzone">
         <input id="filePicker" type="file" multiple disabled>
         <div class="dropzone-inner">
-          <strong id="dropTitle">Choose output folder first</strong>
-          <span id="dropSubtitle">Files and EXR folders can be added after output is set</span>
+          <strong id="dropTitle">Сначала выберите папку вывода</strong>
+          <span id="dropSubtitle">Файлы и EXR-папки можно добавить после выбора папки</span>
         </div>
       </section>
 
       <section class="status-panel">
         <div class="status-header">
           <div>
-            <h2>Queue</h2>
-            <p id="queueSummary">0 items</p>
+            <h2>Очередь</h2>
+            <p id="queueSummary">0 элементов</p>
           </div>
           <div class="queue-actions">
-            <button id="startQueue" type="button">Start</button>
-            <button id="pauseQueue" type="button">Pause</button>
-            <button id="stopQueue" type="button">Stop</button>
-            <button id="clearQueue" type="button">Clear</button>
-            <button id="openOutput" type="button">Open folder</button>
+            <button id="startQueue" type="button">Старт</button>
+            <button id="pauseQueue" type="button">Пауза</button>
+            <button id="stopQueue" type="button">Стоп</button>
+            <button id="clearQueue" type="button">Очистить</button>
+            <button id="openOutput" type="button">Открыть папку</button>
           </div>
         </div>
         <ul class="file-list" id="fileList"></ul>
@@ -75,7 +75,7 @@
 
       <section class="modal hidden" id="updateModal" aria-hidden="true">
         <div class="modal-panel">
-          <h2 id="updateTitle">Update available</h2>
+          <h2 id="updateTitle">Доступно обновление</h2>
           <p id="updateBody"></p>
           <div class="modal-progress hidden" id="updateProgressWrap">
             <div class="progress-track">
@@ -84,8 +84,8 @@
             <span id="updateProgressText">0%</span>
           </div>
           <div class="modal-actions">
-            <button id="downloadUpdate" type="button">Download and install</button>
-            <button id="closeUpdateModal" type="button">Later</button>
+            <button id="downloadUpdate" type="button">Скачать и установить</button>
+            <button id="closeUpdateModal" type="button">Позже</button>
           </div>
         </div>
       </section>
@@ -94,23 +94,23 @@
         <div class="modal-panel faq-panel">
           <h2>FAQ</h2>
           <div class="faq-content">
-            <h3>Basic flow</h3>
-            <p>Choose an output folder, drop files or numbered EXR folders into the queue, then press Start.</p>
-            <h3>PNG output</h3>
-            <p>PNG mode exports a 16-bit PNG from the first readable frame using an sRGB-oriented RGB path.</p>
-            <h3>Video output</h3>
-            <p>H.264 MP4 mode exports lossless 10-bit H.264 High10 MP4 through CPU x264.</p>
-            <h3>Duration</h3>
-            <p>Full duration is enabled by default. Disable it only when a specific duration in seconds is required.</p>
-            <h3>EXR folders</h3>
-            <p>Drop a folder with continuous numbered files like shot_0001.exr, shot_0002.exr. The app reads the sequence at 25 fps.</p>
-            <h3>Queue controls</h3>
-            <p>Start begins queued jobs. Pause stops after the current job. Stop kills the current FFmpeg process. Clear empties the queue.</p>
-            <h3>Updates</h3>
-            <p>Updates are downloaded and installed from the app window. The installer runs silently and the app relaunches after installation.</p>
+            <h3>Базовый порядок</h3>
+            <p>Выберите папку вывода, добавьте файлы или папки с нумерованной EXR-секвенцией, затем нажмите Старт.</p>
+            <h3>PNG</h3>
+            <p>Режим PNG сохраняет 16-битный PNG из первого читаемого кадра через sRGB-oriented RGB path. Для статичных файлов это обычная конвертация изображения, для видео берётся первый кадр.</p>
+            <h3>H.264 MP4</h3>
+            <p>Режим H.264 MP4 сохраняет lossless 10-bit H.264 High10 MP4 через CPU x264, без звука, с BT.709/sRGB-friendly метаданными цвета.</p>
+            <h3>Длина</h3>
+            <p>По умолчанию включена полная длина исходника. Отключите Полная длина только если нужен конкретный хронометраж в секундах.</p>
+            <h3>EXR-секвенции</h3>
+            <p>Перетащите папку с непрерывной нумерацией, например shot_0001.exr, shot_0002.exr. Приложение читает EXR-секвенции как 24 fps.</p>
+            <h3>Очередь</h3>
+            <p>Старт запускает ожидающие задачи. Пауза остановит очередь после текущего файла. Стоп убивает текущий FFmpeg-процесс. Очистить удаляет все элементы из очереди.</p>
+            <h3>Обновления</h3>
+            <p>Обновления скачиваются и устанавливаются из окна приложения. Установщик запускается тихо, после установки приложение перезапускается.</p>
           </div>
           <div class="modal-actions">
-            <button id="closeFaqModal" type="button">Close</button>
+            <button id="closeFaqModal" type="button">Закрыть</button>
           </div>
         </div>
       </section>

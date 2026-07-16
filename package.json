@@ -1,7 +1,7 @@
 {
   "name": "gfx_ai_conv",
-  "version": "0.1.8",
-  "description": "Local drag-and-drop converter for PNG and H.264 MP4 production files.",
+  "version": "0.1.9",
+  "description": "Локальный drag-and-drop конвертер для PNG и H.264 MP4 production-файлов.",
   "main": "src/main.js",
   "author": "intime8",
   "license": "MIT",
