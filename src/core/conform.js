@@ -53,11 +53,34 @@ function resolveLatestTrack(selectedPath) {
 
 function findCameraDirectory(selectedPath) {
   const normalized = path.resolve(selectedPath);
-  const candidates = [
-    normalized,
-    path.join(normalized, "3d_track", "camera"),
-    path.join(normalized, "camera")
-  ];
+  const candidates = [];
+  const addCandidate = (candidate) => {
+    const resolved = path.resolve(candidate);
+    if (!candidates.some((existing) => existing.toLowerCase() === resolved.toLowerCase())) {
+      candidates.push(resolved);
+    }
+  };
+
+  let cursor = normalized;
+  for (let depth = 0; depth < 5; depth += 1) {
+    const name = path.basename(cursor).toLowerCase();
+    if (/^v\d+$/.test(name)) {
+      addCandidate(path.dirname(cursor));
+      addCandidate(cursor);
+    }
+    if (name === "3d_track") {
+      addCandidate(path.join(cursor, "camera"));
+    }
+    addCandidate(cursor);
+    addCandidate(path.join(cursor, "3d_track", "camera"));
+    addCandidate(path.join(cursor, "camera"));
+
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      break;
+    }
+    cursor = parent;
+  }
 
   for (const candidate of candidates) {
     if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
@@ -65,15 +88,20 @@ function findCameraDirectory(selectedPath) {
     }
 
     const name = path.basename(candidate).toLowerCase();
-    const hasVersions = fs.readdirSync(candidate, { withFileTypes: true })
-      .some((entry) => entry.isDirectory() && /^v\d+$/i.test(entry.name));
+    const entries = fs.readdirSync(candidate, { withFileTypes: true });
+    const hasVersions = entries.some((entry) => entry.isDirectory() && /^v\d+$/i.test(entry.name));
+    const hasTrackFiles = entries.some(
+      (entry) => entry.isFile() && /_distort_v\d+\.nk$/i.test(entry.name)
+    );
 
-    if (name === "camera" || hasVersions) {
+    if (name === "camera" || hasVersions || hasTrackFiles) {
       return candidate;
     }
   }
 
-  throw new Error("Не найдена папка 3d_track\\camera с версиями vNNN.");
+  throw new Error(
+    `Не найдена папка 3d_track\\camera или версия с *_distort_vNNN.nk. Проверено: ${candidates.join("; ")}`
+  );
 }
 
 function describeTrackFile(filePath, directoryVersion = null) {

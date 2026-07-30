@@ -41,9 +41,23 @@ const elements = Object.fromEntries(
 
 let pendingUpdate = null;
 
+window.addEventListener("error", (event) => {
+  reportLog("error", "windowError", {
+    message: event.message,
+    filename: event.filename,
+    line: event.lineno,
+    column: event.colno,
+    stack: event.error && event.error.stack
+  });
+});
+window.addEventListener("unhandledrejection", (event) => {
+  reportLog("error", "unhandledRejection", event.reason);
+});
+
 init();
 
 async function init() {
+  reportLog("info", "initStart");
   bindEvents();
   elements.versionLabel.textContent = `v${await window.gfxConv.getVersion()} · AI conform`;
   state.settings = await window.gfxConv.getSettings();
@@ -76,6 +90,7 @@ async function init() {
     elements.updateProgressFill.style.width = `${progress}%`;
     elements.updateProgressText.textContent = `${progress}%`;
   });
+  reportLog("info", "initComplete");
 }
 
 function bindEvents() {
@@ -91,6 +106,7 @@ function bindEvents() {
   elements.openOutputButton.addEventListener("click", openCurrentOutput);
   elements.faqButton.addEventListener("click", () => showModal(elements.faqModal));
   elements.closeFaqButton.addEventListener("click", () => hideModal(elements.faqModal));
+  elements.collectLogsButton.addEventListener("click", collectLogs);
   elements.updateButton.addEventListener("click", () => checkUpdates(true));
   elements.closeUpdateButton.addEventListener("click", () => hideModal(elements.updateModal));
   elements.downloadUpdateButton.addEventListener("click", downloadAndInstallUpdate);
@@ -128,6 +144,27 @@ function bindEvents() {
     elements.denoiseValue.textContent = state.settings.denoiseStrength.toFixed(1);
   });
   elements.denoiseInput.addEventListener("change", saveSettingsAndAnalyze);
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (button) {
+      reportLog("info", "buttonClick", {
+        id: button.id,
+        label: button.textContent.trim(),
+        disabled: button.disabled
+      });
+    }
+  });
+
+  document.addEventListener("change", (event) => {
+    const control = event.target;
+    if (control && control.id) {
+      reportLog("info", "controlChange", {
+        id: control.id,
+        value: control.type === "checkbox" ? control.checked : control.value
+      });
+    }
+  });
 }
 
 async function loadColorSpaces() {
@@ -597,6 +634,37 @@ function queueSummary() {
   return `${done}/${state.jobs.length} готово${active}${paused}`;
 }
 
+async function collectLogs() {
+  const button = elements.collectLogsButton;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Собираю…";
+
+  try {
+    const result = await window.gfxConv.collectLogs({
+      capturedAt: new Date().toISOString(),
+      running: state.running,
+      paused: state.paused,
+      stopping: state.stopping,
+      activeId: state.activeId,
+      plate: state.plate,
+      track: state.track,
+      analysis: state.analysis,
+      settings: state.settings,
+      jobs: state.jobs
+    });
+
+    if (result && result.path) {
+      showToast(`Логи собраны: ${result.path}`);
+    }
+  } catch (error) {
+    showToast(error.message || "Не удалось собрать диагностические логи.");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
 async function checkUpdates(showNoUpdate) {
   elements.updateButton.disabled = true;
   try {
@@ -663,10 +731,19 @@ function hideModal(modal) {
 }
 
 function showToast(message) {
+  reportLog("info", "toast", { message });
   elements.toast.textContent = message;
   elements.toast.classList.remove("hidden");
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => elements.toast.classList.add("hidden"), 5000);
+}
+
+function reportLog(level, event, details = null) {
+  try {
+    window.gfxConv.log(level, event, details);
+  } catch (_error) {
+    // Logging must never interfere with the UI.
+  }
 }
 
 function findJob(id) {

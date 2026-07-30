@@ -16,6 +16,7 @@
         </div>
         <div class="top-actions">
           <span class="runtime-status loading" id="runtimeStatus">OCIO…</span>
+          <button id="collectLogsButton" type="button">Собрать логи</button>
           <button id="faqButton" type="button">FAQ</button>
           <button id="updateButton" type="button">Обновления</button>
         </div>
@@ -39,7 +40,7 @@
           </div>
 
           <label for="trackPath">Трек камеры</label>
-          <input id="trackPath" type="text" readonly placeholder="Папка шота, 3d_track или camera">
+          <input id="trackPath" type="text" readonly placeholder="Папка шота, 3d_track, camera или vNNN">
           <button id="chooseTrackButton" type="button">Выбрать трек</button>
 
           <label for="outputPath">Папка вывода</label>
@@ -167,7 +168,7 @@
             <h3>1. Исходный plate</h3>
             <p>Кнопка «Файл» выбирает одиночное изображение, видео или любой кадр EXR-секвенции. Кнопка «EXR-папка» выбирает каталог целиком: приложение найдёт в нём крупнейшую нумерованную EXR-секвенцию. Нумерация проверяется на пропуски, EXR-секвенции всегда считаются как 24 fps, а видео читается с его исходным fps.</p>
             <h3>2. Трек камеры</h3>
-            <p>Нажмите «Выбрать трек» и укажите папку шота, 3d_track или camera. Приложение найдёт camera\vNNN, возьмёт последнюю версию и прочитает *_distort_vNNN.nk. Поддерживается 3DE4 Radial Standard Degree 4 со статическими и анимированными коэффициентами.</p>
+            <p>Нажмите «Выбрать трек» и укажите папку шота, 3d_track, camera или конкретную vNNN. Приложение найдёт camera\vNNN, возьмёт последнюю версию и прочитает *_distort_vNNN.nk. Поддерживается 3DE4 Radial Standard Degree 4 со статическими и анимированными коэффициентами.</p>
             <h3>3. Входной colorspace</h3>
             <p>Список загружается из ACES OCIO-конфигурации установленного Nuke. Выберите пространство, в котором действительно записан plate: обычно ACES2065-1 для AP0 EXR или ACEScg для AP1 CG-рендера. Выбор относится к конкретному заданию и сохраняется в очереди.</p>
             <h3>4. Разрешение 4K</h3>
@@ -184,6 +185,8 @@
             <p>Приложение не запускает интерфейс Nuke и не использует Nuke для undistort. Из локальной установки берутся Python, PyOpenColorIO и ACES config. Если Nuke/OCIO не найден, приложение покажет ошибку до добавления задания.</p>
             <h3>10. Обновления</h3>
             <p>Проверка, скачивание и запуск установщика выполняются в окне приложения. После тихой установки программа перезапускается. Для доступа к GitHub Releases сеть должна разрешать api.github.com и github.com.</p>
+            <h3>11. Диагностические логи</h3>
+            <p>Приложение постоянно записывает события интерфейса, параметры заданий, этапы обработки и вывод backend в локальные журналы. Кнопка «Собрать логи» создаёт ZIP с журналами, настройками очереди и сведениями о системе, затем показывает архив в Проводнике. Исходные изображения, видео и .nk в архив не копируются.</p>
           </div>
           <div class="modal-actions">
             <button id="closeFaqButton" type="button">Закрыть</button>

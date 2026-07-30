@@ -21,12 +21,14 @@ const {
   findNukeRuntime,
   runPythonJson
 } = require("./core/runtime");
+const { createLogger, summarizeValue } = require("./core/logger");
 
 const REPO_OWNER = "intime8-builds";
 const REPO_NAME = "GFX_Ai_conv";
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD4SURBVFhH7ZSxEYJQFATpwrbogw5sQKvAwBJISYwowIyMkMAavgwc3hcOxuS+ge7MJnrOPnU0+zNzKE4hpcgSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNdq3DJc+LGjDUW7XIkvUaNNzEzok30lyQPTO+ybk0XN53SQ44Nqi/vm7VSJL1EiZ14+pf6+mx14HTXR1uXqNElmiRsqvH7D1FcyH+Q8oqnAbUwPzpzCY8IDoaxAkOWBU/RcsfpZ7IkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyP0+WPQGxDZvikCMZ/QAAAABJRU5ErkJggg==";
 const appDataRoot = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-const stableUserDataPath = path.join(appDataRoot, "GFX Ai Conv");
+const stableUserDataPath = process.env.GFX_AI_CONV_USER_DATA
+  || path.join(appDataRoot, "GFX Ai Conv");
 const logDir = path.join(stableUserDataPath, "logs");
 const previewsDir = path.join(stableUserDataPath, "previews");
 const updatesDir = path.join(stableUserDataPath, "updates");
@@ -55,13 +57,29 @@ for (const directory of [logDir, previewsDir, updatesDir, jobsDir]) {
   fs.mkdirSync(directory, { recursive: true });
 }
 
+const logger = createLogger({ logDir });
+const logEvent = (level, event, details = null) => logger.log(level, event, details);
+
+logEvent("info", "app.bootstrap", {
+  version: app.getVersion(),
+  packaged: app.isPackaged,
+  executable: process.execPath,
+  appPath: app.getAppPath(),
+  platform: process.platform,
+  arch: process.arch,
+  osRelease: os.release(),
+  argv: process.argv
+});
+
 process.on("uncaughtException", (error) => {
+  logEvent("fatal", "process.uncaughtException", error);
   writeCrashLog("uncaughtException", error);
   dialog.showErrorBox("GFX Ai Conv: ошибка запуска", error.stack || error.message || String(error));
   app.quit();
 });
 
 process.on("unhandledRejection", (reason) => {
+  logEvent("error", "process.unhandledRejection", reason);
   writeCrashLog("unhandledRejection", reason);
 });
 
@@ -75,6 +93,7 @@ let runtimeCache = null;
 let ocioCache = null;
 
 if (!gotSingleInstanceLock) {
+  logEvent("warn", "app.singleInstanceRejected");
   app.quit();
 } else {
   app.on("second-instance", showMainWindow);
@@ -85,6 +104,8 @@ function createWindow() {
     showMainWindow();
     return mainWindow;
   }
+
+  logEvent("info", "window.create");
 
   const win = new BrowserWindow({
     width: 1240,
@@ -104,14 +125,35 @@ function createWindow() {
   });
 
   mainWindow = win;
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    logEvent(level >= 3 ? "error" : level === 2 ? "warn" : "debug", "renderer.console", {
+      message,
+      line,
+      sourceId
+    });
+  });
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    logEvent("error", "renderer.didFailLoad", { errorCode, errorDescription, validatedURL });
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    logEvent("fatal", "renderer.processGone", details);
+  });
+  win.on("unresponsive", () => {
+    logEvent("error", "window.unresponsive");
+  });
+  win.on("responsive", () => {
+    logEvent("info", "window.responsive");
+  });
   win.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
+      logEvent("info", "window.hide", { reason: "close" });
       win.hide();
     }
   });
   win.on("minimize", (event) => {
     event.preventDefault();
+    logEvent("info", "window.hide", { reason: "minimize" });
     win.hide();
   });
   win.on("closed", () => {
@@ -120,10 +162,13 @@ function createWindow() {
     }
   });
   win.once("ready-to-show", () => {
+    logEvent("info", "window.readyToShow");
     win.show();
     win.focus();
   });
-  win.loadFile(path.join(__dirname, "renderer", "index.html"));
+  win.loadFile(path.join(__dirname, "renderer", "index.html")).catch((error) => {
+    logEvent("error", "window.loadFailed", error);
+  });
   return win;
 }
 
@@ -132,6 +177,7 @@ app.whenReady().then(() => {
     return;
   }
 
+  logEvent("info", "app.ready");
   Menu.setApplicationMenu(null);
   createTray();
   createWindow();
@@ -144,6 +190,7 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
+  logEvent("info", "app.beforeQuit", { activeWorker: Boolean(activeWorker) });
   isQuitting = true;
 });
 
@@ -153,7 +200,7 @@ app.on("window-all-closed", () => {
   }
 });
 
-ipcMain.handle("dialog:choosePlate", async () => {
+handleIpc("dialog:choosePlate", async () => {
   const settings = loadSettings();
   const result = await dialog.showOpenDialog({
     title: "Выберите исходный plate или один кадр EXR-секвенции",
@@ -181,7 +228,7 @@ ipcMain.handle("dialog:choosePlate", async () => {
   return { ...plate, media };
 });
 
-ipcMain.handle("dialog:choosePlateFolder", async () => {
+handleIpc("dialog:choosePlateFolder", async () => {
   const settings = loadSettings();
   const result = await dialog.showOpenDialog({
     title: "Выберите папку с EXR-секвенцией",
@@ -204,10 +251,10 @@ ipcMain.handle("dialog:choosePlateFolder", async () => {
   return { ...plate, media };
 });
 
-ipcMain.handle("dialog:chooseTrack", async () => {
+handleIpc("dialog:chooseTrack", async () => {
   const settings = loadSettings();
   const result = await dialog.showOpenDialog({
-    title: "Выберите папку шота, 3d_track или camera",
+    title: "Выберите папку шота, 3d_track, camera или vNNN",
     defaultPath: existingDirectory(settings.lastTrackDir),
     properties: ["openDirectory"]
   });
@@ -224,7 +271,7 @@ ipcMain.handle("dialog:chooseTrack", async () => {
   return track;
 });
 
-ipcMain.handle("dialog:chooseOutputDir", async () => {
+handleIpc("dialog:chooseOutputDir", async () => {
   const settings = loadSettings();
   const result = await dialog.showOpenDialog({
     title: "Выберите папку вывода",
@@ -239,11 +286,11 @@ ipcMain.handle("dialog:chooseOutputDir", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("ocio:list", async () => {
+handleIpc("ocio:list", async () => {
   return getOcioInfo();
 });
 
-ipcMain.handle("conform:analyze", async (_event, payload) => {
+handleIpc("conform:analyze", async (_event, payload) => {
   const plate = payload && payload.plate;
   const track = payload && payload.track;
   const settings = sanitizeSettings(payload && payload.settings);
@@ -284,7 +331,7 @@ ipcMain.handle("conform:analyze", async (_event, payload) => {
   };
 });
 
-ipcMain.handle("preview:createSource", async (_event, payload) => {
+handleIpc("preview:createSource", async (_event, payload) => {
   const plate = payload && payload.plate;
 
   if (!plate) {
@@ -296,7 +343,7 @@ ipcMain.handle("preview:createSource", async (_event, payload) => {
   return pathToFileURL(outputPath).href;
 });
 
-ipcMain.handle("preview:createConform", async (_event, payload) => {
+handleIpc("preview:createConform", async (_event, payload) => {
   const job = await buildWorkerJob(payload);
   const id = sanitizeFileName(payload.id || Date.now());
   const jobPath = path.join(jobsDir, `preview-${id}.json`);
@@ -317,7 +364,7 @@ ipcMain.handle("preview:createConform", async (_event, payload) => {
   }
 });
 
-ipcMain.handle("conform:run", async (event, payload) => {
+handleIpc("conform:run", async (event, payload) => {
   if (activeWorker) {
     throw new Error("Другая задача уже выполняется.");
   }
@@ -334,7 +381,7 @@ ipcMain.handle("conform:run", async (event, payload) => {
   }
 });
 
-ipcMain.handle("conform:cancel", async () => {
+handleIpc("conform:cancel", async () => {
   if (!activeWorker) {
     return { ok: true };
   }
@@ -350,21 +397,29 @@ ipcMain.handle("conform:cancel", async () => {
   return { ok: true };
 });
 
-ipcMain.handle("shell:openPath", async (_event, targetPath) => {
+handleIpc("shell:openPath", async (_event, targetPath) => {
   if (targetPath) {
     await shell.openPath(targetPath);
   }
 });
 
-ipcMain.handle("app:getVersion", () => app.getVersion());
-ipcMain.handle("settings:get", () => loadSettings());
-ipcMain.handle("settings:save", (_event, settings) => {
+handleIpc("app:getVersion", () => app.getVersion());
+handleIpc("settings:get", () => loadSettings());
+handleIpc("settings:save", (_event, settings) => {
   const clean = sanitizeSettings(settings);
   saveSettings(clean);
   return clean;
 });
-ipcMain.handle("updates:check", checkForUpdates);
-ipcMain.handle("updates:downloadAndInstall", async (event) => {
+ipcMain.on("logs:renderer", (_event, payload) => {
+  const level = payload && payload.level;
+  const event = payload && payload.event;
+  logEvent(level, `renderer.${event || "event"}`, payload && payload.details);
+});
+handleIpc("logs:collect", async (_event, payload) => {
+  return collectDiagnosticBundle(payload);
+});
+handleIpc("updates:check", checkForUpdates);
+handleIpc("updates:downloadAndInstall", async (event) => {
   const result = await checkForUpdates();
 
   if (!result.ok) {
@@ -421,16 +476,39 @@ async function buildWorkerJob(payload) {
 function runConformWorker(jobPath, id, sender) {
   return new Promise((resolve, reject) => {
     const runtime = getRuntime();
+    const workerLogPath = path.join(
+      logDir,
+      `worker-${sanitizeFileName(id)}-${Date.now()}.log`
+    );
+    const appendWorkerLog = (stream, value) => {
+      try {
+        fs.appendFileSync(
+          workerLogPath,
+          `[${new Date().toISOString()}] [${stream}] ${String(value).replace(/\s+$/, "")}\n`,
+          "utf8"
+        );
+      } catch (_error) {
+        // The main application log remains available if a per-worker log cannot be written.
+      }
+    };
     const child = spawn(runtime.python, [bundledPath("backend", "conform_worker.py"), jobPath], {
       env: buildPythonEnv(runtime, bundledPath("vendor", "py311")),
       windowsHide: true
     });
     const workerState = { child, cancelled: false };
     activeWorker = workerState;
+    logEvent("info", "worker.start", {
+      id,
+      pid: child.pid,
+      python: runtime.python,
+      jobPath,
+      workerLogPath
+    });
     let stdoutBuffer = "";
     let stderr = "";
     let result = null;
     let workerError = null;
+    let lastPhase = "";
 
     child.stdout.on("data", (chunk) => {
       stdoutBuffer += chunk.toString();
@@ -442,11 +520,16 @@ function runConformWorker(jobPath, id, sender) {
           continue;
         }
 
+        appendWorkerLog("stdout", line);
         try {
           const message = JSON.parse(line);
 
           if (message.type === "progress") {
             sender.send("conform:progress", { id, ...message });
+            if (message.phase !== lastPhase) {
+              lastPhase = message.phase;
+              logEvent("info", "worker.phase", { id, phase: message.phase, progress: message.progress });
+            }
           } else if (message.type === "result") {
             result = message;
           } else if (message.type === "error") {
@@ -458,13 +541,29 @@ function runConformWorker(jobPath, id, sender) {
       }
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      appendWorkerLog("stderr", text);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      logEvent("error", "worker.spawnError", { id, error });
+      if (activeWorker === workerState) {
+        activeWorker = null;
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
       if (activeWorker === workerState) {
         activeWorker = null;
       }
+      logEvent(code === 0 ? "info" : "error", "worker.close", {
+        id,
+        code,
+        cancelled: workerState.cancelled,
+        result,
+        error: workerError || compactError(stderr),
+        workerLogPath
+      });
 
       if (workerState.cancelled) {
         reject(new Error("Конвертация остановлена."));
@@ -489,13 +588,21 @@ function runConformWorker(jobPath, id, sender) {
 
 function getRuntime() {
   if (!runtimeCache) {
+    logEvent("info", "runtime.searchStart");
     runtimeCache = findNukeRuntime();
+    logEvent("info", "runtime.found", {
+      version: runtimeCache.version,
+      root: runtimeCache.root,
+      python: runtimeCache.python,
+      ocioConfig: runtimeCache.ocioConfig
+    });
   }
   return runtimeCache;
 }
 
 async function getOcioInfo() {
   if (!ocioCache) {
+    logEvent("info", "ocio.probeStart");
     const runtime = getRuntime();
     ocioCache = await runPythonJson(
       runtime,
@@ -504,6 +611,14 @@ async function getOcioInfo() {
       [runtime.ocioConfig]
     );
     ocioCache.runtime = runtime.version;
+    logEvent("info", "ocio.probeComplete", {
+      runtime: ocioCache.runtime,
+      version: ocioCache.ocioVersion,
+      configPath: ocioCache.configPath,
+      display: ocioCache.display,
+      view: ocioCache.view,
+      colorSpaceCount: ocioCache.colorSpaces && ocioCache.colorSpaces.length
+    });
   }
   return ocioCache;
 }
@@ -781,6 +896,178 @@ function safeUnlink(filePath) {
   } catch (_error) {
     // Temporary file cleanup is best-effort.
   }
+}
+
+function handleIpc(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const startedAt = Date.now();
+    logEvent("debug", "ipc.start", {
+      channel,
+      args: args.map((value) => summarizeValue(value))
+    });
+
+    try {
+      const result = await handler(event, ...args);
+      logEvent("debug", "ipc.complete", {
+        channel,
+        durationMs: Date.now() - startedAt,
+        result: summarizeValue(result)
+      });
+      return result;
+    } catch (error) {
+      logEvent("error", "ipc.failed", {
+        channel,
+        durationMs: Date.now() - startedAt,
+        error
+      });
+      throw error;
+    }
+  });
+}
+
+async function collectDiagnosticBundle(payload) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const suggestedPath = path.join(app.getPath("downloads"), `GFX-Ai-Conv-logs-${stamp}.zip`);
+  let selectedPath = process.env.GFX_AI_CONV_DIAGNOSTICS_PATH?.trim() || "";
+
+  if (!selectedPath) {
+    const selection = await dialog.showSaveDialog(mainWindow, {
+      title: "Сохранить диагностические логи",
+      defaultPath: suggestedPath,
+      filters: [{ name: "ZIP archive", extensions: ["zip"] }]
+    });
+
+    if (selection.canceled || !selection.filePath) {
+      logEvent("info", "logs.collectionCancelled");
+      return null;
+    }
+    selectedPath = selection.filePath;
+  }
+
+  const destination = selectedPath.toLowerCase().endsWith(".zip")
+    ? selectedPath
+    : `${selectedPath}.zip`;
+  const stagingDir = path.join(jobsDir, `diagnostics-${logger.sessionId}-${Date.now()}`);
+  const temporaryZip = `${destination}.tmp-${process.pid}.zip`;
+  fs.mkdirSync(stagingDir, { recursive: true });
+  logEvent("info", "logs.collectionStart", { destination });
+
+  try {
+    const copiedLogs = path.join(stagingDir, "logs");
+    fs.cpSync(logDir, copiedLogs, { recursive: true });
+    fs.writeFileSync(
+      path.join(stagingDir, "diagnostics.json"),
+      `${JSON.stringify(buildDiagnostics(), null, 2)}\n`,
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(stagingDir, "settings.json"),
+      `${JSON.stringify(loadSettings(), null, 2)}\n`,
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(stagingDir, "queue.json"),
+      `${JSON.stringify(summarizeValue(payload || {}), null, 2)}\n`,
+      "utf8"
+    );
+
+    await compressDirectory(stagingDir, temporaryZip);
+    if (fs.existsSync(destination)) {
+      fs.unlinkSync(destination);
+    }
+    fs.renameSync(temporaryZip, destination);
+    logEvent("info", "logs.collectionComplete", {
+      destination,
+      bytes: fs.statSync(destination).size
+    });
+    shell.showItemInFolder(destination);
+    return { path: destination, bytes: fs.statSync(destination).size };
+  } catch (error) {
+    logEvent("error", "logs.collectionFailed", { destination, error });
+    throw error;
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    safeUnlink(temporaryZip);
+  }
+}
+
+function buildDiagnostics() {
+  let runtime = null;
+
+  try {
+    const found = getRuntime();
+    runtime = {
+      version: found.version,
+      root: found.root,
+      python: found.python,
+      ocioConfig: found.ocioConfig
+    };
+  } catch (error) {
+    runtime = { error: error.message || String(error) };
+  }
+
+  return {
+    createdAt: new Date().toISOString(),
+    sessionId: logger.sessionId,
+    application: {
+      version: app.getVersion(),
+      packaged: app.isPackaged,
+      executable: process.execPath,
+      appPath: app.getAppPath(),
+      userData: stableUserDataPath,
+      ffmpegPath
+    },
+    process: {
+      pid: process.pid,
+      platform: process.platform,
+      arch: process.arch,
+      versions: process.versions
+    },
+    operatingSystem: {
+      type: os.type(),
+      release: os.release(),
+      version: os.version(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      totalMemoryBytes: os.totalmem(),
+      freeMemoryBytes: os.freemem(),
+      cpuCount: os.cpus().length,
+      cpuModels: [...new Set(os.cpus().map((cpu) => cpu.model))]
+    },
+    runtime
+  };
+}
+
+function compressDirectory(sourceDir, destinationPath) {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$source = '${escapePowerShellString(sourceDir)}'`,
+    `$destination = '${escapePowerShellString(destinationPath)}'`,
+    "Compress-Archive -Path (Join-Path $source '*') -DestinationPath $destination -CompressionLevel Optimal -Force"
+  ].join("\r\n");
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-WindowStyle", "Hidden",
+      "-Command", script
+    ], {
+      windowsHide: true
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(compactError(stderr) || `Compress-Archive завершился с кодом ${code}.`));
+      }
+    });
+  });
 }
 
 function writeCrashLog(kind, error) {

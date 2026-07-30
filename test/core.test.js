@@ -14,6 +14,7 @@ const {
   resolveLatestTrack
 } = require("../src/core/conform");
 const { evaluateTrack, parseNkText } = require("../src/core/nk-parser");
+const { createLogger, summarizeValue } = require("../src/core/logger");
 
 const STATIC_NODE = `
 LD_3DE4_Radial_Standard_Degree_4 {
@@ -109,6 +110,15 @@ test("latest track version and continuous EXR sequence are discovered", (context
   assert.equal(latest.version, 3);
   assert.match(latest.filePath, /v003/);
 
+  const fromTrackFolder = resolveLatestTrack(path.join(root, "SHOT_0010", "3d_track"));
+  assert.equal(fromTrackFolder.version, 3);
+
+  const fromCameraFolder = resolveLatestTrack(camera);
+  assert.equal(fromCameraFolder.version, 3);
+
+  const fromVersionFolder = resolveLatestTrack(path.join(camera, "v001"));
+  assert.equal(fromVersionFolder.version, 3);
+
   const plateDir = path.join(root, "plate");
   fs.mkdirSync(plateDir);
   for (const frame of [1001, 1002, 1003]) {
@@ -125,4 +135,35 @@ test("latest track version and continuous EXR sequence are discovered", (context
   const folderPlate = discoverPlateDirectory(plateDir);
   assert.equal(folderPlate.frameCount, 3);
   assert.match(folderPlate.displayName, /^SHOT_0010/);
+});
+
+test("structured logger records events and rotates bounded files", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gfx-logs-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const logger = createLogger({
+    logDir: root,
+    sessionId: "test-session",
+    maxBytes: 180,
+    retainedFiles: 2
+  });
+
+  for (let index = 0; index < 12; index += 1) {
+    logger.log("info", "test.event", { index, value: "x".repeat(80) });
+  }
+
+  const files = fs.readdirSync(root).filter((name) => name.endsWith(".log"));
+  assert.ok(files.includes("app.log"));
+  assert.ok(files.length <= 3);
+  const current = fs.readFileSync(path.join(root, "app.log"), "utf8").trim();
+  const record = JSON.parse(current.split(/\r?\n/).at(-1));
+  assert.equal(record.sessionId, "test-session");
+  assert.equal(record.event, "test.event");
+});
+
+test("log value summarizer handles cycles and long strings", () => {
+  const value = { text: "x".repeat(5000) };
+  value.self = value;
+  const summary = summarizeValue(value);
+  assert.match(summary.text, /truncated/);
+  assert.equal(summary.self, "[Circular]");
 });

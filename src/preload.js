@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld("gfxConv", {
   cancelConform: () => ipcRenderer.invoke("conform:cancel"),
   openPath: (targetPath) => ipcRenderer.invoke("shell:openPath", targetPath),
   getVersion: () => ipcRenderer.invoke("app:getVersion"),
+  collectLogs: (payload) => ipcRenderer.invoke("logs:collect", payload),
+  log: (level, event, details) => ipcRenderer.send("logs:renderer", { level, event, details }),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   checkUpdates: () => ipcRenderer.invoke("updates:check"),
