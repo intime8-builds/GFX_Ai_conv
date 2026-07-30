@@ -1,58 +1,43 @@
+"use strict";
+
 const state = {
-  mode: "png",
-  outputDir: "",
-  items: [],
+  settings: null,
+  colorInfo: null,
+  plate: null,
+  track: null,
+  analysis: null,
+  sourcePreviewUrl: "",
+  conformPreviewUrl: "",
+  jobs: [],
   running: false,
   paused: false,
   stopping: false,
-  activeId: null
+  activeId: null,
+  analysisGeneration: 0
 };
 
 const STATUS_LABELS = {
   queued: "в очереди",
   paused: "пауза",
-  converting: "конвертация",
+  converting: "обработка",
   done: "готово",
   error: "ошибка",
   stopped: "остановлено"
 };
 
-const modeButtons = document.querySelectorAll(".mode-button");
-const outputDirInput = document.querySelector("#outputDir");
-const chooseOutputButton = document.querySelector("#chooseOutput");
-const dropzone = document.querySelector("#dropzone");
-const dropTitle = document.querySelector("#dropTitle");
-const dropSubtitle = document.querySelector("#dropSubtitle");
-const filePicker = document.querySelector("#filePicker");
-const fileList = document.querySelector("#fileList");
-const queueSummary = document.querySelector("#queueSummary");
-const videoSettings = document.querySelector("#videoSettings");
-const durationFullInput = document.querySelector("#durationFullInput");
-const durationInput = document.querySelector("#durationInput");
-const outputSpec = document.querySelector("#outputSpec");
-const colorSpaceInput = document.querySelector("#colorSpaceInput");
-const sourceSizeInput = document.querySelector("#sourceSizeInput");
-const widthInput = document.querySelector("#widthInput");
-const heightInput = document.querySelector("#heightInput");
-const openOutputButton = document.querySelector("#openOutput");
-const startQueueButton = document.querySelector("#startQueue");
-const pauseQueueButton = document.querySelector("#pauseQueue");
-const stopQueueButton = document.querySelector("#stopQueue");
-const clearQueueButton = document.querySelector("#clearQueue");
-const toast = document.querySelector("#toast");
-const versionLabel = document.querySelector("#versionLabel");
-const faqButton = document.querySelector("#faqButton");
-const updateButton = document.querySelector("#updateButton");
-const updateModal = document.querySelector("#updateModal");
-const updateTitle = document.querySelector("#updateTitle");
-const updateBody = document.querySelector("#updateBody");
-const updateProgressWrap = document.querySelector("#updateProgressWrap");
-const updateProgressFill = document.querySelector("#updateProgressFill");
-const updateProgressText = document.querySelector("#updateProgressText");
-const downloadUpdateButton = document.querySelector("#downloadUpdate");
-const closeUpdateModalButton = document.querySelector("#closeUpdateModal");
-const faqModal = document.querySelector("#faqModal");
-const closeFaqModalButton = document.querySelector("#closeFaqModal");
+const PHASE_LABELS = {
+  preparing: "подготовка",
+  conform: "denoise · undistort · OCIO · ProRes",
+  padding: "дополнение последним кадром",
+  "topview-pass-1": "Topview: анализ",
+  "topview-pass-2": "Topview: кодирование",
+  qc: "проверка результата",
+  done: "готово"
+};
+
+const elements = Object.fromEntries(
+  Array.from(document.querySelectorAll("[id]")).map((element) => [element.id, element])
+);
 
 let pendingUpdate = null;
 
@@ -60,263 +45,361 @@ init();
 
 async function init() {
   bindEvents();
-  await hydrateVersion();
-  await hydrateSettings();
-  updateDropzoneState();
-  renderFileList();
+  elements.versionLabel.textContent = `v${await window.gfxConv.getVersion()} · AI conform`;
+  state.settings = await window.gfxConv.getSettings();
+  hydrateSettings();
+  renderAll();
+  await loadColorSpaces();
   checkUpdates(false);
 
-  window.gfxConv.onConversionProgress((update) => {
-    const item = findItem(update.id);
+  window.gfxConv.onConformProgress((update) => {
+    const job = findJob(update.id);
 
-    if (!item) {
+    if (!job) {
       return;
     }
 
-    Object.assign(item, update);
-    renderFileList();
+    job.progress = Number.isFinite(update.progress) ? update.progress : job.progress;
+    job.phase = update.phase || job.phase;
+    renderJobs();
   });
 
   window.gfxConv.onUpdateDownloadProgress((update) => {
     if (update.phase === "installing") {
-      updateBody.textContent = "Устанавливаю обновление в тихом режиме. Приложение перезапустится автоматически.";
-      updateProgressFill.style.width = "100%";
-      updateProgressText.textContent = "Установка";
+      elements.updateBody.textContent = "Устанавливаю обновление. Приложение перезапустится автоматически.";
+      elements.updateProgressFill.style.width = "100%";
+      elements.updateProgressText.textContent = "Установка";
       return;
     }
 
     const progress = update.progress || 0;
-    updateProgressFill.style.width = `${progress}%`;
-    updateProgressText.textContent = `${progress}%`;
+    elements.updateProgressFill.style.width = `${progress}%`;
+    elements.updateProgressText.textContent = `${progress}%`;
   });
 }
 
 function bindEvents() {
-  modeButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      setMode(button.dataset.mode, true);
-    });
+  elements.choosePlateButton.addEventListener("click", () => choosePlate("file"));
+  elements.choosePlateFolderButton.addEventListener("click", () => choosePlate("folder"));
+  elements.chooseTrackButton.addEventListener("click", chooseTrack);
+  elements.chooseOutputButton.addEventListener("click", chooseOutput);
+  elements.addQueueButton.addEventListener("click", addCurrentJob);
+  elements.startQueueButton.addEventListener("click", startQueue);
+  elements.pauseQueueButton.addEventListener("click", pauseQueue);
+  elements.stopQueueButton.addEventListener("click", stopQueue);
+  elements.clearQueueButton.addEventListener("click", clearQueue);
+  elements.openOutputButton.addEventListener("click", openCurrentOutput);
+  elements.faqButton.addEventListener("click", () => showModal(elements.faqModal));
+  elements.closeFaqButton.addEventListener("click", () => hideModal(elements.faqModal));
+  elements.updateButton.addEventListener("click", () => checkUpdates(true));
+  elements.closeUpdateButton.addEventListener("click", () => hideModal(elements.updateModal));
+  elements.downloadUpdateButton.addEventListener("click", downloadAndInstallUpdate);
+
+  elements.autoOutputInput.addEventListener("change", async () => {
+    state.settings.outputMode = elements.autoOutputInput.checked ? "auto" : "manual";
+    elements.chooseOutputButton.disabled = elements.autoOutputInput.checked;
+    await saveSettingsAndAnalyze();
   });
 
-  chooseOutputButton.addEventListener("click", async () => {
-    const selectedDir = await window.gfxConv.chooseOutputDir();
+  elements.autoDurationInput.addEventListener("change", async () => {
+    state.settings.durationMode = elements.autoDurationInput.checked ? "auto" : "custom";
+    elements.durationInput.disabled = elements.autoDurationInput.checked;
+    await saveSettingsAndAnalyze();
+  });
 
-    if (!selectedDir) {
+  elements.durationInput.addEventListener("change", async () => {
+    elements.durationInput.value = clampInteger(elements.durationInput.value, 4, 15, 4);
+    state.settings.durationSeconds = Number(elements.durationInput.value);
+    await saveSettingsAndAnalyze();
+  });
+
+  elements.colorSpaceInput.addEventListener("change", async () => {
+    state.settings.inputColorSpace = elements.colorSpaceInput.value;
+    await saveSettingsAndAnalyze();
+  });
+
+  elements.resolutionModeInput.addEventListener("change", async () => {
+    state.settings.resolutionMode = elements.resolutionModeInput.value === "hd" ? "hd" : "source";
+    await saveSettingsAndAnalyze();
+  });
+
+  elements.denoiseInput.addEventListener("input", () => {
+    state.settings.denoiseStrength = Number(elements.denoiseInput.value);
+    elements.denoiseValue.textContent = state.settings.denoiseStrength.toFixed(1);
+  });
+  elements.denoiseInput.addEventListener("change", saveSettingsAndAnalyze);
+}
+
+async function loadColorSpaces() {
+  try {
+    const info = await window.gfxConv.listColorSpaces();
+    state.colorInfo = info;
+    elements.colorSpaceInput.innerHTML = "";
+
+    for (const name of info.colorSpaces) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      elements.colorSpaceInput.append(option);
+    }
+
+    const requested = state.settings.inputColorSpace;
+    elements.colorSpaceInput.value = info.colorSpaces.includes(requested) ? requested : info.defaultInput;
+    state.settings.inputColorSpace = elements.colorSpaceInput.value;
+    elements.colorSpaceInput.disabled = false;
+    elements.runtimeStatus.textContent = `${info.runtime} · OCIO ${info.ocioVersion}`;
+    elements.runtimeStatus.className = "runtime-status";
+    await saveSettings();
+    await analyzeCurrent();
+  } catch (error) {
+    elements.runtimeStatus.textContent = "OCIO недоступен";
+    elements.runtimeStatus.className = "runtime-status error";
+    elements.setupStatus.textContent = error.message || "Не удалось загрузить Nuke OCIO.";
+    showToast(error.message || "Не удалось загрузить Nuke OCIO.");
+    renderSetup();
+  }
+}
+
+function hydrateSettings() {
+  elements.autoOutputInput.checked = state.settings.outputMode !== "manual";
+  elements.chooseOutputButton.disabled = elements.autoOutputInput.checked;
+  elements.outputPath.value = elements.autoOutputInput.checked
+    ? ""
+    : state.settings.outputDir || "";
+  elements.autoDurationInput.checked = state.settings.durationMode !== "custom";
+  elements.durationInput.disabled = elements.autoDurationInput.checked;
+  elements.durationInput.value = clampInteger(state.settings.durationSeconds, 4, 15, 4);
+  elements.resolutionModeInput.value = state.settings.resolutionMode === "hd" ? "hd" : "source";
+  elements.denoiseInput.value = clampNumber(state.settings.denoiseStrength, 0, 2, 1);
+  elements.denoiseValue.textContent = Number(elements.denoiseInput.value).toFixed(1);
+}
+
+async function choosePlate(sourceType) {
+  setSetupBusy(true, "Читаю исходный plate…");
+  try {
+    const plate = sourceType === "folder"
+      ? await window.gfxConv.choosePlateFolder()
+      : await window.gfxConv.choosePlate();
+
+    if (!plate) {
       return;
     }
 
-    state.outputDir = selectedDir;
-    outputDirInput.value = selectedDir;
-    updateDropzoneState();
-    saveCurrentSettings();
-  });
+    state.plate = plate;
+    state.analysis = null;
+    state.sourcePreviewUrl = "";
+    state.conformPreviewUrl = "";
+    elements.platePath.value = plate.selectedPath;
+    state.settings.lastPlateDir = parentDirectory(plate.selectedPath);
+    renderSetup();
+    const previewId = crypto.randomUUID();
+    window.gfxConv.createSourcePreview({ plate, id: previewId })
+      .then((url) => {
+        if (state.plate === plate && url) {
+          state.sourcePreviewUrl = url;
+          renderPreviews();
+        }
+      })
+      .catch(() => {});
+    await analyzeCurrent();
+  } catch (error) {
+    showToast(error.message || "Не удалось открыть plate.");
+  } finally {
+    setSetupBusy(false);
+  }
+}
 
-  openOutputButton.addEventListener("click", () => {
-    if (!state.outputDir) {
-      showToast("Сначала выберите папку вывода.");
+async function chooseTrack() {
+  setSetupBusy(true, "Ищу последнюю версию трека…");
+  try {
+    const track = await window.gfxConv.chooseTrack();
+    if (!track) {
       return;
     }
 
-    window.gfxConv.openPath(state.outputDir);
-  });
-
-  updateButton.addEventListener("click", () => checkUpdates(true));
-  faqButton.addEventListener("click", showFaqModal);
-  closeFaqModalButton.addEventListener("click", hideFaqModal);
-  closeUpdateModalButton.addEventListener("click", hideUpdateModal);
-  downloadUpdateButton.addEventListener("click", downloadAndInstallUpdate);
-  startQueueButton.addEventListener("click", startQueue);
-  pauseQueueButton.addEventListener("click", pauseQueue);
-  stopQueueButton.addEventListener("click", stopQueue);
-  clearQueueButton.addEventListener("click", clearQueue);
-
-  dropzone.addEventListener("dragover", (event) => {
-    event.preventDefault();
-
-    if (!state.outputDir) {
-      dropzone.classList.add("blocked");
-      return;
-    }
-
-    dropzone.classList.add("dragover");
-  });
-
-  dropzone.addEventListener("dragleave", () => {
-    dropzone.classList.remove("dragover", "blocked");
-  });
-
-  dropzone.addEventListener("drop", async (event) => {
-    event.preventDefault();
-    dropzone.classList.remove("dragover", "blocked");
-    await addFiles(event.dataTransfer.files);
-  });
-
-  filePicker.addEventListener("change", async () => {
-    await addFiles(filePicker.files);
-    filePicker.value = "";
-  });
-
-  durationFullInput.addEventListener("change", () => {
-    durationInput.disabled = durationFullInput.checked;
-    saveCurrentSettings();
-  });
-
-  durationInput.addEventListener("change", () => {
-    durationInput.value = clampInteger(durationInput.value, 1, 86400, 4);
-    saveCurrentSettings();
-  });
-
-  sourceSizeInput.addEventListener("change", () => {
-    updateResolutionInputs();
-    saveCurrentSettings();
-  });
-
-  [widthInput, heightInput].forEach((input) => {
-    input.addEventListener("change", () => {
-      input.value = clampInteger(input.value, 1, 16384, input.id === "widthInput" ? 1920 : 1080);
-      saveCurrentSettings();
-    });
-  });
-
-  colorSpaceInput.addEventListener("change", () => {
-    updateOutputSpec();
-    saveCurrentSettings();
-  });
+    state.track = track;
+    state.analysis = null;
+    state.conformPreviewUrl = "";
+    elements.trackPath.value = track.filePath;
+    state.settings.lastTrackDir = track.cameraDir;
+    renderSetup();
+    await analyzeCurrent();
+  } catch (error) {
+    showToast(error.message || "Не удалось открыть трек.");
+  } finally {
+    setSetupBusy(false);
+  }
 }
 
-async function hydrateVersion() {
-  const version = await window.gfxConv.getVersion();
-  versionLabel.textContent = `v${version}`;
-}
-
-async function hydrateSettings() {
-  const settings = await window.gfxConv.getSettings();
-  const video = settings.video || {};
-  const outputSize = video.outputSize || {};
-
-  state.outputDir = settings.outputDir || "";
-  outputDirInput.value = state.outputDir;
-  durationFullInput.checked = video.durationMode !== "custom";
-  durationInput.disabled = durationFullInput.checked;
-  durationInput.value = clampInteger(video.durationSeconds, 1, 86400, 4);
-  colorSpaceInput.value = video.colorSpace === "srgb" ? "srgb" : "aces2065";
-  sourceSizeInput.checked = outputSize.mode !== "custom";
-  widthInput.value = clampInteger(outputSize.width, 1, 16384, 1920);
-  heightInput.value = clampInteger(outputSize.height, 1, 16384, 1080);
-  updateResolutionInputs();
-  setMode(settings.mode === "video" ? "video" : "png", false);
-}
-
-async function addFiles(fileListLike) {
-  if (!state.outputDir) {
-    showToast("Сначала выберите папку вывода.");
-    updateDropzoneState();
+async function chooseOutput() {
+  const outputDir = await window.gfxConv.chooseOutputDir();
+  if (!outputDir) {
     return;
   }
 
-  const files = Array.from(fileListLike || [])
-    .map((file) => ({
+  state.settings.outputMode = "manual";
+  state.settings.outputDir = outputDir;
+  elements.autoOutputInput.checked = false;
+  elements.chooseOutputButton.disabled = false;
+  elements.outputPath.value = outputDir;
+  await saveSettingsAndAnalyze();
+}
+
+async function analyzeCurrent() {
+  const generation = ++state.analysisGeneration;
+
+  if (!state.plate || !state.track || !state.colorInfo) {
+    state.analysis = null;
+    renderSetup();
+    return;
+  }
+
+  if (state.settings.outputMode === "manual" && !state.settings.outputDir) {
+    state.analysis = null;
+    renderSetup();
+    return;
+  }
+
+  elements.setupStatus.textContent = "Рассчитываю длительность и холст…";
+  elements.addQueueButton.disabled = true;
+
+  try {
+    const analysis = await window.gfxConv.analyzeConform({
+      plate: state.plate,
+      track: state.track,
+      settings: state.settings
+    });
+
+    if (generation !== state.analysisGeneration) {
+      return;
+    }
+
+    state.analysis = analysis;
+    state.settings.lastResolvedOutputDir = analysis.outputDir;
+    elements.outputPath.value = analysis.outputDir;
+    renderSetup();
+    await saveSettings();
+    createConformPreview(generation);
+  } catch (error) {
+    if (generation === state.analysisGeneration) {
+      state.analysis = null;
+      elements.setupStatus.textContent = error.message || "Анализ не выполнен.";
+      showToast(error.message || "Анализ не выполнен.");
+      renderSetup();
+    }
+  }
+}
+
+async function createConformPreview(generation) {
+  state.conformPreviewUrl = "";
+  elements.conformPreview.innerHTML = "<span>Рассчитываю conform preview…</span>";
+
+  try {
+    const url = await window.gfxConv.createConformPreview({
       id: crypto.randomUUID(),
-      path: window.gfxConv.getFilePath(file),
-      name: file.name,
-      status: "queued",
-      progress: 0,
-      previewUrl: ""
-    }))
-    .filter((file) => file.path);
+      plate: state.plate,
+      track: state.track,
+      analysis: state.analysis,
+      settings: state.settings
+    });
 
-  if (files.length === 0) {
-    showToast("Не удалось добавить читаемые файлы.");
+    if (generation === state.analysisGeneration && url) {
+      state.conformPreviewUrl = url;
+      renderPreviews();
+    }
+  } catch (error) {
+    if (generation === state.analysisGeneration) {
+      elements.conformPreview.innerHTML = `<span>${escapeHtml(error.message || "Превью недоступно")}</span>`;
+    }
+  }
+}
+
+async function saveSettingsAndAnalyze() {
+  await saveSettings();
+  await analyzeCurrent();
+}
+
+async function saveSettings() {
+  state.settings = await window.gfxConv.saveSettings(state.settings);
+}
+
+function addCurrentJob() {
+  if (!state.plate || !state.track || !state.analysis) {
+    showToast("Задание ещё не готово.");
     return;
   }
 
-  state.items.push(...files);
-  renderFileList();
-  hydratePreviews(files);
-}
-
-async function hydratePreviews(files) {
-  for (const file of files) {
-    try {
-      const previewUrl = await window.gfxConv.createPreview({ id: file.id, path: file.path });
-      const item = findItem(file.id);
-
-      if (item && previewUrl) {
-        item.previewUrl = previewUrl;
-        renderFileList();
-      }
-    } catch (_error) {
-      const item = findItem(file.id);
-
-      if (item) {
-        item.previewError = true;
-      }
-    }
-  }
+  const job = {
+    id: crypto.randomUUID(),
+    plate: deepClone(state.plate),
+    track: deepClone(state.track),
+    analysis: deepClone(state.analysis),
+    settings: deepClone(state.settings),
+    sourcePreviewUrl: state.sourcePreviewUrl,
+    conformPreviewUrl: state.conformPreviewUrl,
+    status: "queued",
+    progress: 0,
+    phase: "queued"
+  };
+  state.jobs.push(job);
+  renderJobs();
+  showToast(`${job.analysis.shotName} добавлен в очередь.`);
 }
 
 async function startQueue() {
-  if (!state.outputDir) {
-    showToast("Сначала выберите папку вывода.");
-    return;
-  }
-
   if (state.running) {
     state.paused = false;
-    renderFileList();
+    state.jobs.filter((job) => job.status === "paused").forEach((job) => {
+      job.status = "queued";
+    });
+    renderJobs();
     return;
   }
 
-  if (!state.items.some((item) => item.status === "queued" || item.status === "paused")) {
-    showToast("Очередь пуста.");
+  if (!state.jobs.some(isRunnable)) {
+    showToast("В очереди нет заданий для запуска.");
     return;
   }
 
   state.running = true;
   state.paused = false;
   state.stopping = false;
-  renderFileList();
+  renderJobs();
 
   while (state.running && !state.paused && !state.stopping) {
-    const item = state.items.find((entry) => entry.status === "queued" || entry.status === "paused");
-
-    if (!item) {
+    const job = state.jobs.find(isRunnable);
+    if (!job) {
       break;
     }
 
-    state.activeId = item.id;
-    item.status = "converting";
-    item.progress = item.progress || 0;
-    renderFileList();
+    state.activeId = job.id;
+    job.status = "converting";
+    job.phase = "preparing";
+    job.error = "";
+    renderJobs();
 
     try {
-      const result = await window.gfxConv.convertFile({
-        mode: state.mode,
-        outputDir: state.outputDir,
-        file: item,
-        settings: getSettings()
-      });
-      Object.assign(item, result);
+      const result = await window.gfxConv.runConform(job);
+      Object.assign(job, result);
+      job.phase = "done";
     } catch (error) {
-      item.status = state.stopping ? "stopped" : "error";
-      item.error = error.message || "Конвертация не удалась.";
+      job.status = state.stopping ? "stopped" : "error";
+      job.error = error.message || "Conform не выполнен.";
     } finally {
       state.activeId = null;
-      renderFileList();
+      renderJobs();
     }
   }
 
   if (state.paused) {
-    state.items
-      .filter((item) => item.status === "queued")
-      .forEach((item) => {
-        item.status = "paused";
-      });
+    state.jobs.filter((job) => job.status === "queued").forEach((job) => {
+      job.status = "paused";
+    });
   }
 
   state.running = false;
   state.stopping = false;
-  renderFileList();
+  renderJobs();
 }
 
 function pauseQueue() {
@@ -325,214 +408,199 @@ function pauseQueue() {
   }
 
   state.paused = true;
-  showToast("Очередь остановится после текущего файла.");
-  renderFileList();
+  showToast("Очередь остановится после текущего shot.");
+  renderJobs();
 }
 
 async function stopQueue() {
-  if (!state.running && !state.activeId) {
-    state.items
-      .filter((item) => item.status === "queued" || item.status === "paused")
-      .forEach((item) => {
-        item.status = "stopped";
-      });
-    renderFileList();
-    return;
-  }
-
   state.stopping = true;
   state.paused = false;
-  await window.gfxConv.cancelConversion();
-  state.items
-    .filter((item) => item.status === "queued" || item.status === "paused")
-    .forEach((item) => {
-      item.status = "stopped";
-    });
-  renderFileList();
+
+  if (state.activeId) {
+    await window.gfxConv.cancelConform();
+  }
+
+  state.jobs.filter(isRunnable).forEach((job) => {
+    job.status = "stopped";
+  });
+  renderJobs();
 }
 
 async function clearQueue() {
   if (state.activeId) {
     state.stopping = true;
-    await window.gfxConv.cancelConversion();
+    await window.gfxConv.cancelConform();
   }
 
-  state.items = [];
+  state.jobs = [];
   state.running = false;
   state.paused = false;
   state.stopping = false;
   state.activeId = null;
-  renderFileList();
+  renderJobs();
 }
 
-function getSettings() {
-  return {
-    durationMode: durationFullInput.checked ? "full" : "custom",
-    durationSeconds: durationInput.value,
-    colorSpace: colorSpaceInput.value === "aces2065" ? "aces2065" : "srgb",
-    outputSize: {
-      mode: sourceSizeInput.checked ? "source" : "custom",
-      width: widthInput.value,
-      height: heightInput.value
+function openCurrentOutput() {
+  const outputDir = state.analysis?.outputDir
+    || state.jobs.at(-1)?.analysis.outputDir
+    || state.settings.lastResolvedOutputDir;
+
+  if (!outputDir) {
+    showToast("Папка вывода ещё не определена.");
+    return;
+  }
+
+  window.gfxConv.openPath(outputDir);
+}
+
+function renderAll() {
+  renderSetup();
+  renderPreviews();
+  renderJobs();
+}
+
+function renderSetup() {
+  if (state.plate) {
+    const media = state.plate.media;
+    elements.plateSpec.textContent = `${media.width}×${media.height} · ${formatFps(media.fps)} fps · ${state.plate.frameCount || media.frameCount} кадр.`;
+  } else {
+    elements.plateSpec.textContent = "—";
+  }
+
+  if (state.track) {
+    const animation = state.track.animated ? "анимирован" : "статический";
+    elements.trackSpec.textContent = `v${String(state.track.version || 0).padStart(3, "0")} · ${animation}`;
+  } else {
+    elements.trackSpec.textContent = "—";
+  }
+
+  if (state.analysis) {
+    elements.durationSpec.textContent = `${state.analysis.duration.targetSeconds} сек · ${formatFps(state.analysis.fps)} fps`;
+    elements.canvasSpec.textContent = `${state.analysis.canvas.width}×${state.analysis.canvas.height}`;
+    elements.setupStatus.textContent = `${state.analysis.shotName} готов к постановке в очередь`;
+    elements.outputPath.value = state.analysis.outputDir;
+  } else {
+    elements.durationSpec.textContent = "—";
+    elements.canvasSpec.textContent = "—";
+    if (!state.plate || !state.track) {
+      elements.setupStatus.textContent = "Выберите исходный plate и трек камеры";
     }
-  };
+  }
+
+  elements.warningList.innerHTML = state.analysis?.warnings?.map(
+    (warning) => `<li>${escapeHtml(warning)}</li>`
+  ).join("") || "";
+  elements.addQueueButton.disabled = !state.analysis || !state.colorInfo;
+  elements.chooseOutputButton.disabled = elements.autoOutputInput.checked;
 }
 
-function setMode(mode, persist) {
-  state.mode = mode === "video" ? "video" : "png";
-  modeButtons.forEach((item) => item.classList.toggle("active", item.dataset.mode === state.mode));
-  videoSettings.classList.toggle("hidden", state.mode !== "video");
-  updateOutputSpec();
+function renderPreviews() {
+  renderPreview(elements.sourcePreview, state.sourcePreviewUrl, "Исходный plate");
+  renderPreview(elements.conformPreview, state.conformPreviewUrl, "Conform preview");
+}
 
-  if (persist) {
-    saveCurrentSettings();
+function renderPreview(container, url, fallback) {
+  if (url) {
+    container.innerHTML = `<img src="${escapeHtml(url)}" alt="">`;
+  } else if (!container.textContent.includes("Рассчитываю")) {
+    container.innerHTML = `<span>${escapeHtml(fallback)}</span>`;
   }
 }
 
-function updateOutputSpec() {
-  if (state.mode !== "video") {
+function renderJobs() {
+  elements.queueSummary.textContent = queueSummary();
+  renderQueueButtons();
+
+  if (state.jobs.length === 0) {
+    elements.jobList.innerHTML = '<li class="empty-queue">В очереди нет заданий</li>';
     return;
   }
 
-  outputSpec.textContent = colorSpaceInput.value === "aces2065"
-    ? "Lossless H.264 High10 · ACES2065-1 color"
-    : "Lossless H.264 High10 · sRGB color";
-}
-
-function updateResolutionInputs() {
-  const disabled = sourceSizeInput.checked;
-  widthInput.disabled = disabled;
-  heightInput.disabled = disabled;
-}
-
-async function saveCurrentSettings() {
-  try {
-    await window.gfxConv.saveSettings({
-      mode: state.mode,
-      outputDir: state.outputDir,
-      video: getSettings()
-    });
-  } catch (error) {
-    showToast(error.message || "Настройки не сохранены.");
-  }
-}
-
-function updateDropzoneState() {
-  const ready = Boolean(state.outputDir);
-  dropzone.classList.toggle("disabled", !ready);
-  filePicker.disabled = !ready;
-  dropTitle.textContent = ready ? "Перетащите файлы или EXR-папки сюда" : "Сначала выберите папку вывода";
-  dropSubtitle.textContent = ready
-    ? "Элементы добавятся в очередь; нажмите Старт для конвертации"
-    : "Файлы нельзя добавить, пока не выбрана папка вывода";
-}
-
-function renderFileList() {
-  queueSummary.textContent = buildQueueSummary();
-  renderButtons();
-
-  if (state.items.length === 0) {
-    fileList.innerHTML = `<li class="empty-queue">В очереди нет элементов</li>`;
-    return;
-  }
-
-  fileList.innerHTML = state.items.map((file) => {
-    const detail = file.error || file.outputPath || file.path;
-    const progress = Number.isFinite(file.progress) ? file.progress : 0;
-    const preview = file.previewUrl
-      ? `<img class="preview" src="${escapeHtml(file.previewUrl)}" alt="">`
-      : `<div class="preview placeholder">ПРЕВЬЮ</div>`;
-    const action = file.outputPath
-      ? `<button type="button" data-open="${escapeHtml(file.outputPath)}">Открыть</button>`
+  elements.jobList.innerHTML = state.jobs.map((job) => {
+    const progress = Number.isFinite(job.progress) ? job.progress : 0;
+    const detail = job.error || job.mainPath || PHASE_LABELS[job.phase] || job.analysis.outputDir;
+    const preview = job.conformPreviewUrl || job.sourcePreviewUrl;
+    const statusLabel = STATUS_LABELS[job.status] || job.status;
+    const openButton = job.mainPath
+      ? `<button type="button" data-open="${escapeHtml(job.mainPath)}">Открыть MOV</button>`
       : "";
-    const requeueAction = `<button type="button" data-requeue="${escapeHtml(file.id)}">Повторить</button>`;
-    const statusLabel = STATUS_LABELS[file.status] || file.status;
 
     return `
-      <li class="file-item">
-        ${preview}
-        <div class="file-main">
-          <div class="file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name || file.path)}</div>
-          <div class="file-detail" title="${escapeHtml(detail || "")}">${escapeHtml(detail || "")}</div>
+      <li class="job-item">
+        ${preview ? `<img class="job-thumb" src="${escapeHtml(preview)}" alt="">` : '<div class="job-thumb"></div>'}
+        <div class="job-main">
+          <div class="job-name">${escapeHtml(job.analysis.shotName)}</div>
+          <div class="job-spec">${escapeHtml(job.settings.inputColorSpace)} · ${formatFps(job.analysis.fps)} fps · ${job.analysis.duration.targetSeconds} сек · ${job.analysis.canvas.width}×${job.analysis.canvas.height}</div>
+          <div class="job-detail" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div>
           <div class="progress-row">
-            <div class="progress-track">
-              <div class="progress-fill" style="width: ${progress}%"></div>
-            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
             <span>${progress}%</span>
           </div>
         </div>
-        <span class="pill ${escapeHtml(file.status)}">${escapeHtml(statusLabel)}</span>
-        <div class="item-actions">
-          ${action}
-          ${requeueAction}
+        <span class="status-pill ${escapeHtml(job.status)}">${escapeHtml(statusLabel)}</span>
+        <div class="job-actions">
+          ${openButton}
+          <button type="button" data-output="${escapeHtml(job.analysis.outputDir)}">Папка</button>
+          <button type="button" data-repeat="${escapeHtml(job.id)}">Повторить</button>
         </div>
       </li>
     `;
   }).join("");
 
-  fileList.querySelectorAll("[data-open]").forEach((button) => {
-    button.addEventListener("click", () => {
-      window.gfxConv.openPath(button.dataset.open);
-    });
+  elements.jobList.querySelectorAll("[data-open]").forEach((button) => {
+    button.addEventListener("click", () => window.gfxConv.openPath(button.dataset.open));
   });
-
-  fileList.querySelectorAll("[data-requeue]").forEach((button) => {
-    button.addEventListener("click", () => {
-      requeueItem(button.dataset.requeue);
-    });
+  elements.jobList.querySelectorAll("[data-output]").forEach((button) => {
+    button.addEventListener("click", () => window.gfxConv.openPath(button.dataset.output));
+  });
+  elements.jobList.querySelectorAll("[data-repeat]").forEach((button) => {
+    button.addEventListener("click", () => repeatJob(button.dataset.repeat));
   });
 }
 
-function requeueItem(id) {
-  const item = findItem(id);
-
-  if (!item) {
+function repeatJob(id) {
+  const source = findJob(id);
+  if (!source) {
     return;
   }
 
-  const nextItem = {
-    id: crypto.randomUUID(),
-    path: item.path,
-    name: item.name,
-    status: "queued",
-    progress: 0,
-    previewUrl: item.previewUrl || ""
-  };
-
-  state.items.push(nextItem);
-  renderFileList();
-
-  if (!nextItem.previewUrl) {
-    hydratePreviews([nextItem]);
-  }
+  const copy = deepClone(source);
+  copy.id = crypto.randomUUID();
+  copy.status = "queued";
+  copy.progress = 0;
+  copy.phase = "queued";
+  delete copy.error;
+  delete copy.mainPath;
+  delete copy.topviewPath;
+  delete copy.reportPath;
+  state.jobs.push(copy);
+  renderJobs();
 }
 
-function renderButtons() {
-  const hasItems = state.items.length > 0;
-  const hasRunnable = state.items.some((item) => item.status === "queued" || item.status === "paused");
-  startQueueButton.disabled = !state.outputDir || !hasRunnable || (state.running && !state.paused);
-  pauseQueueButton.disabled = !state.running || state.paused;
-  stopQueueButton.disabled = !hasItems || (!state.running && !state.activeId && !state.items.some((item) => item.status === "queued" || item.status === "paused"));
-  clearQueueButton.disabled = !hasItems;
+function renderQueueButtons() {
+  const hasJobs = state.jobs.length > 0;
+  const hasRunnable = state.jobs.some(isRunnable);
+  elements.startQueueButton.disabled = !hasRunnable || (state.running && !state.paused);
+  elements.pauseQueueButton.disabled = !state.running || state.paused;
+  elements.stopQueueButton.disabled = !hasJobs || (!state.activeId && !hasRunnable);
+  elements.clearQueueButton.disabled = !hasJobs;
 }
 
-function buildQueueSummary() {
-  if (state.items.length === 0) {
-    return "0 элементов";
+function queueSummary() {
+  if (state.jobs.length === 0) {
+    return "0 заданий";
   }
 
-  const done = state.items.filter((item) => item.status === "done").length;
-  const active = state.items.some((item) => item.status === "converting") ? " · идёт конвертация" : "";
-  const paused = state.paused ? " · пауза после текущего файла" : "";
-  return `${done}/${state.items.length} готово${active}${paused}`;
+  const done = state.jobs.filter((job) => job.status === "done").length;
+  const active = state.activeId ? " · выполняется" : "";
+  const paused = state.paused ? " · пауза после текущего" : "";
+  return `${done}/${state.jobs.length} готово${active}${paused}`;
 }
 
 async function checkUpdates(showNoUpdate) {
-  updateButton.disabled = true;
-
+  elements.updateButton.disabled = true;
   try {
     const result = await window.gfxConv.checkUpdates();
-
     if (!result.ok) {
       if (showNoUpdate) {
         showToast(`Не удалось проверить обновления: ${result.error}`);
@@ -542,32 +610,18 @@ async function checkUpdates(showNoUpdate) {
 
     if (result.hasUpdate && result.installerAsset) {
       pendingUpdate = result;
-      showUpdateModal(result);
-      return;
-    }
-
-    if (showNoUpdate) {
+      elements.updateTitle.textContent = `Доступна версия ${result.releaseName || result.latestVersion}`;
+      elements.updateBody.textContent = `Текущая версия: ${result.currentVersion}. Установщик будет скачан и запущен без перехода на GitHub.`;
+      elements.updateProgressWrap.classList.add("hidden");
+      elements.downloadUpdateButton.disabled = false;
+      elements.closeUpdateButton.disabled = false;
+      showModal(elements.updateModal);
+    } else if (showNoUpdate) {
       showToast("Установлена последняя версия.");
     }
   } finally {
-    updateButton.disabled = false;
+    elements.updateButton.disabled = false;
   }
-}
-
-function showUpdateModal(result) {
-  updateTitle.textContent = `Доступна версия ${result.releaseName || result.latestVersion}`;
-  updateBody.textContent = `Текущая версия: ${result.currentVersion}. Новая версия: ${result.latestVersion}. Установщик скачается, установится в тихом режиме и перезапустит приложение.`;
-  updateProgressWrap.classList.add("hidden");
-  updateProgressFill.style.width = "0%";
-  updateProgressText.textContent = "0%";
-  downloadUpdateButton.disabled = false;
-  updateModal.classList.remove("hidden");
-  updateModal.setAttribute("aria-hidden", "false");
-}
-
-function hideUpdateModal() {
-  updateModal.classList.add("hidden");
-  updateModal.setAttribute("aria-hidden", "true");
 }
 
 async function downloadAndInstallUpdate() {
@@ -575,52 +629,75 @@ async function downloadAndInstallUpdate() {
     return;
   }
 
-  downloadUpdateButton.disabled = true;
-  closeUpdateModalButton.disabled = true;
-  updateBody.textContent = "Скачиваю обновление...";
-  updateProgressWrap.classList.remove("hidden");
+  elements.downloadUpdateButton.disabled = true;
+  elements.closeUpdateButton.disabled = true;
+  elements.updateBody.textContent = "Скачиваю обновление…";
+  elements.updateProgressWrap.classList.remove("hidden");
 
   try {
     await window.gfxConv.downloadAndInstallUpdate();
   } catch (error) {
-    downloadUpdateButton.disabled = false;
-    closeUpdateModalButton.disabled = false;
+    elements.downloadUpdateButton.disabled = false;
+    elements.closeUpdateButton.disabled = false;
     showToast(error.message || "Не удалось установить обновление.");
   }
 }
 
-function showFaqModal() {
-  faqModal.classList.remove("hidden");
-  faqModal.setAttribute("aria-hidden", "false");
+function setSetupBusy(busy, message = "") {
+  elements.choosePlateButton.disabled = busy;
+  elements.choosePlateFolderButton.disabled = busy;
+  elements.chooseTrackButton.disabled = busy;
+  if (busy && message) {
+    elements.setupStatus.textContent = message;
+  }
 }
 
-function hideFaqModal() {
-  faqModal.classList.add("hidden");
-  faqModal.setAttribute("aria-hidden", "true");
+function showModal(modal) {
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
 }
 
-function findItem(id) {
-  return state.items.find((item) => item.id === id);
+function hideModal(modal) {
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
 }
 
 function showToast(message) {
-  toast.textContent = message;
-  toast.classList.remove("hidden");
+  elements.toast.textContent = message;
+  elements.toast.classList.remove("hidden");
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => elements.toast.classList.add("hidden"), 5000);
+}
 
-  window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => {
-    toast.classList.add("hidden");
-  }, 4200);
+function findJob(id) {
+  return state.jobs.find((job) => job.id === id);
+}
+
+function isRunnable(job) {
+  return job.status === "queued" || job.status === "paused";
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function parentDirectory(filePath) {
+  return String(filePath).replace(/[\\/][^\\/]+$/, "");
+}
+
+function formatFps(value) {
+  const number = Number(value);
+  return Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function clampInteger(value, min, max, fallback) {
   const number = Number.parseInt(value, 10);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
 
-  if (Number.isNaN(number)) {
-    return fallback;
-  }
-
-  return Math.min(max, Math.max(min, number));
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }
 
 function escapeHtml(value) {

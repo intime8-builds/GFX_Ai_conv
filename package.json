@@ -1,7 +1,7 @@
 {
   "name": "gfx_ai_conv",
-  "version": "0.1.11",
-  "description": "Локальный drag-and-drop конвертер для PNG и H.264 MP4 production-файлов.",
+  "version": "0.2.0-alpha.1",
+  "description": "Локальная подготовка AI-конформа: denoise, 3DE undistort, Rec.709 ProRes 4444 и Topview.",
   "main": "src/main.js",
   "author": "intime8",
   "license": "MIT",
@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
+    "test": "node --test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
     "dist:zip": "electron-builder --win zip"
@@ -26,10 +27,15 @@
     "copyright": "Copyright © 2026 intime8",
     "asar": true,
     "asarUnpack": [
-      "node_modules/ffmpeg-static/**"
+      "node_modules/ffmpeg-static/**",
+      "backend/**",
+      "vendor/**"
     ],
     "files": [
       "src/**/*",
+      "backend/**/*",
+      "vendor/**/*",
+      "THIRD_PARTY_NOTICES.md",
       "package.json",
       "node_modules/**/*"
     ],

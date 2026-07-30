@@ -1,6 +1,9 @@
 node_modules/
 dist/
 release/
+.playwright-cli/
+__pycache__/
+*.pyc
 *.log
 .env
 .DS_Store

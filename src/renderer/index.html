@@ -2,6 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com https://github.com">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GFX Ai Conv</title>
     <link rel="stylesheet" href="./styles.css">
@@ -11,91 +12,135 @@
       <header class="topbar">
         <div>
           <h1>GFX Ai Conv</h1>
-          <p id="versionLabel">Локальный конвертер</p>
+          <p id="versionLabel">AI conform</p>
         </div>
         <div class="top-actions">
-          <button id="faqButton" title="Открыть FAQ" type="button">FAQ</button>
-          <button id="updateButton" title="Проверить обновления" type="button">Обновления</button>
+          <span class="runtime-status loading" id="runtimeStatus">OCIO…</span>
+          <button id="faqButton" type="button">FAQ</button>
+          <button id="updateButton" type="button">Обновления</button>
         </div>
       </header>
 
-      <section class="toolbar" aria-label="Режим конвертации">
-        <button class="mode-button active" type="button" data-mode="png">PNG</button>
-        <button class="mode-button" type="button" data-mode="video">H.264 MP4</button>
-      </section>
-
-      <section class="controls">
-        <div class="output-row">
-          <label for="outputDir">Папка вывода</label>
-          <input id="outputDir" type="text" readonly placeholder="Выберите папку перед добавлением файлов">
-          <button id="chooseOutput" type="button">Выбрать</button>
+      <section class="setup-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Новое задание</h2>
+            <p id="setupStatus">Выберите исходный plate и трек камеры</p>
+          </div>
+          <button class="primary" id="addQueueButton" type="button" disabled>Добавить в очередь</button>
         </div>
 
-        <div class="resolution-settings">
-          <label class="checkline" for="sourceSizeInput">
-            <input id="sourceSizeInput" type="checkbox" checked>
-            <span>Исходное разрешение</span>
-          </label>
+        <div class="path-grid">
+          <label for="platePath">Исходный plate</label>
+          <input id="platePath" type="text" readonly placeholder="Файл, видео или один кадр EXR-секвенции">
+          <div class="path-actions">
+            <button id="choosePlateButton" type="button">Файл</button>
+            <button id="choosePlateFolderButton" type="button">EXR-папка</button>
+          </div>
 
-          <label class="field" for="widthInput">
-            <span>Ширина</span>
-            <input id="widthInput" type="number" min="1" max="16384" step="1" value="1920" disabled>
-          </label>
+          <label for="trackPath">Трек камеры</label>
+          <input id="trackPath" type="text" readonly placeholder="Папка шота, 3d_track или camera">
+          <button id="chooseTrackButton" type="button">Выбрать трек</button>
 
-          <label class="field" for="heightInput">
-            <span>Высота</span>
-            <input id="heightInput" type="number" min="1" max="16384" step="1" value="1080" disabled>
-          </label>
+          <label for="outputPath">Папка вывода</label>
+          <input id="outputPath" type="text" readonly placeholder="Будет рассчитана после выбора трека">
+          <button id="chooseOutputButton" type="button">Выбрать папку</button>
         </div>
 
-        <div class="video-settings hidden" id="videoSettings">
-          <label class="checkline" for="durationFullInput">
-            <input id="durationFullInput" type="checkbox" checked>
-            <span>Полная длина</span>
-          </label>
+        <label class="checkline output-mode" for="autoOutputInput">
+          <input id="autoOutputInput" type="checkbox" checked>
+          <span>Автоматически: папка шота\ai\conform</span>
+        </label>
 
-          <label class="field" for="durationInput">
-            <span>Своя длина (сек)</span>
-            <input id="durationInput" type="number" min="1" max="86400" step="1" value="4" disabled>
-          </label>
-
-          <label class="field" for="colorSpaceInput">
-            <span>Цвет</span>
-            <select id="colorSpaceInput">
-              <option value="aces2065" selected>ACES2065-1</option>
-              <option value="srgb">sRGB</option>
+        <div class="settings-grid">
+          <label class="field colorspace-field" for="colorSpaceInput">
+            <span>Colorspace исходного plate</span>
+            <select id="colorSpaceInput" disabled>
+              <option>Загрузка из Nuke OCIO…</option>
             </select>
           </label>
 
-          <div class="fixed-spec" id="outputSpec">
-            Lossless H.264 High10 · 10-bit MP4
+          <label class="field" for="resolutionModeInput">
+            <span>Разрешение базы</span>
+            <select id="resolutionModeInput">
+              <option value="source">Сохранить исходное</option>
+              <option value="hd">Нормализовать в 1920×1080</option>
+            </select>
+          </label>
+
+          <div class="duration-field">
+            <label class="checkline" for="autoDurationInput">
+              <input id="autoDurationInput" type="checkbox" checked>
+              <span>Длительность автоматически</span>
+            </label>
+            <label class="field compact-field" for="durationInput">
+              <span>Секунды</span>
+              <input id="durationInput" type="number" min="4" max="15" step="1" value="4" disabled>
+            </label>
+          </div>
+
+          <label class="field" for="denoiseInput">
+            <span>Temporal denoise: <b id="denoiseValue">1.0</b></span>
+            <input id="denoiseInput" type="range" min="0" max="2" step="0.1" value="1">
+          </label>
+        </div>
+
+        <div class="analysis-strip" id="analysisStrip">
+          <div>
+            <span>Plate</span>
+            <strong id="plateSpec">—</strong>
+          </div>
+          <div>
+            <span>Трек</span>
+            <strong id="trackSpec">—</strong>
+          </div>
+          <div>
+            <span>Длительность</span>
+            <strong id="durationSpec">—</strong>
+          </div>
+          <div>
+            <span>Холст вывода</span>
+            <strong id="canvasSpec">—</strong>
+          </div>
+          <div>
+            <span>Форматы</span>
+            <strong>ProRes 4444 + Topview</strong>
           </div>
         </div>
-      </section>
 
-      <section class="dropzone disabled" id="dropzone">
-        <input id="filePicker" type="file" multiple disabled>
-        <div class="dropzone-inner">
-          <strong id="dropTitle">Сначала выберите папку вывода</strong>
-          <span id="dropSubtitle">Файлы и EXR-папки можно добавить после выбора папки</span>
+        <ul class="warning-list" id="warningList"></ul>
+
+        <div class="preview-grid">
+          <figure>
+            <div class="preview-frame" id="sourcePreview">
+              <span>Исходный plate</span>
+            </div>
+            <figcaption>До обработки</figcaption>
+          </figure>
+          <figure>
+            <div class="preview-frame" id="conformPreview">
+              <span>Conform preview</span>
+            </div>
+            <figcaption>Undistort + Rec.709</figcaption>
+          </figure>
         </div>
       </section>
 
-      <section class="status-panel">
-        <div class="status-header">
+      <section class="queue-panel">
+        <div class="section-heading">
           <div>
             <h2>Очередь</h2>
-            <p id="queueSummary">0 элементов</p>
+            <p id="queueSummary">0 заданий</p>
           </div>
           <div class="queue-actions">
-            <button id="startQueue" type="button">Старт</button>
-            <button id="pauseQueue" type="button">Пауза</button>
-            <button id="stopQueue" type="button">Стоп</button>
-            <button id="clearQueue" type="button">Очистить</button>
-            <button id="openOutput" type="button">Открыть папку</button>
+            <button class="primary" id="startQueueButton" type="button">Старт</button>
+            <button id="pauseQueueButton" type="button">Пауза</button>
+            <button id="stopQueueButton" type="button">Стоп</button>
+            <button id="clearQueueButton" type="button">Очистить</button>
+            <button id="openOutputButton" type="button">Открыть output</button>
           </div>
         </div>
-        <ul class="file-list" id="fileList"></ul>
+        <ul class="job-list" id="jobList"></ul>
       </section>
 
       <section class="modal hidden" id="updateModal" aria-hidden="true">
@@ -109,37 +154,39 @@
             <span id="updateProgressText">0%</span>
           </div>
           <div class="modal-actions">
-            <button id="downloadUpdate" type="button">Скачать и установить</button>
-            <button id="closeUpdateModal" type="button">Позже</button>
+            <button class="primary" id="downloadUpdateButton" type="button">Скачать и установить</button>
+            <button id="closeUpdateButton" type="button">Позже</button>
           </div>
         </div>
       </section>
 
       <section class="modal hidden" id="faqModal" aria-hidden="true">
         <div class="modal-panel faq-panel">
-          <h2>FAQ</h2>
+          <h2>Как пользоваться</h2>
           <div class="faq-content">
-            <h3>Базовый порядок</h3>
-            <p>Выберите папку вывода, добавьте файлы или папки с нумерованной EXR-секвенцией, затем нажмите Старт.</p>
-            <h3>PNG</h3>
-            <p>Режим PNG сохраняет 16-битный PNG из первого читаемого кадра через sRGB-oriented RGB path. Для статичных файлов это обычная конвертация изображения, для видео берётся первый кадр.</p>
-            <h3>H.264 MP4</h3>
-            <p>Режим H.264 MP4 сохраняет lossless 10-bit H.264 High10 MP4 через CPU x264, без звука, с BT.709/sRGB-friendly метаданными цвета.</p>
-            <h3>ACES2065-1 в H.264</h3>
-            <p>В режиме H.264 MP4 можно выбрать цвет ACES2065-1. Приложение преобразует пиксели из sRGB/Rec.709 в ACES2065-1/AP0 перед H.264 encode, но файл остаётся .mp4.</p>
-            <h3>Разрешение</h3>
-            <p>По умолчанию используется исходное разрешение. Отключите Исходное разрешение и задайте ширину/высоту, если нужен конкретный output size. Для MP4 нечётные значения будут приведены к чётным пикселям.</p>
-            <h3>Длина</h3>
-            <p>По умолчанию включена полная длина исходника. Отключите Полная длина только если нужен конкретный хронометраж в секундах.</p>
-            <h3>EXR-секвенции</h3>
-            <p>Перетащите папку с непрерывной нумерацией, например shot_0001.exr, shot_0002.exr. Приложение читает EXR-секвенции как 24 fps.</p>
-            <h3>Очередь</h3>
-            <p>Старт запускает ожидающие задачи. Пауза остановит очередь после текущего файла. Стоп убивает текущий FFmpeg-процесс. Очистить удаляет все элементы из очереди. Повторить добавляет тот же исходник в конец очереди для новой конвертации.</p>
-            <h3>Обновления</h3>
-            <p>Обновления скачиваются и устанавливаются из окна приложения. Установщик запускается тихо, после установки приложение перезапускается.</p>
+            <h3>1. Исходный plate</h3>
+            <p>Кнопка «Файл» выбирает одиночное изображение, видео или любой кадр EXR-секвенции. Кнопка «EXR-папка» выбирает каталог целиком: приложение найдёт в нём крупнейшую нумерованную EXR-секвенцию. Нумерация проверяется на пропуски, EXR-секвенции всегда считаются как 24 fps, а видео читается с его исходным fps.</p>
+            <h3>2. Трек камеры</h3>
+            <p>Нажмите «Выбрать трек» и укажите папку шота, 3d_track или camera. Приложение найдёт camera\vNNN, возьмёт последнюю версию и прочитает *_distort_vNNN.nk. Поддерживается 3DE4 Radial Standard Degree 4 со статическими и анимированными коэффициентами.</p>
+            <h3>3. Входной colorspace</h3>
+            <p>Список загружается из ACES OCIO-конфигурации установленного Nuke. Выберите пространство, в котором действительно записан plate: обычно ACES2065-1 для AP0 EXR или ACEScg для AP1 CG-рендера. Выбор относится к конкретному заданию и сохраняется в очереди.</p>
+            <h3>4. Разрешение 4K</h3>
+            <p>По умолчанию сохраняется исходный пиксельный масштаб: 4K не уменьшается до 1920×1080. Режим «Нормализовать в 1920×1080» сначала задаёт HD-базу, затем делает undistort. В обоих режимах приложение только расширяет чёрный холст до ближайшего 16:9 и не применяет auto zoom или crop.</p>
+            <h3>5. Длительность</h3>
+            <p>Автоматический режим округляет исходную длину вверх до целых секунд, минимум 4 и максимум 15 секунд. Короткий plate дополняется последним кадром, длинный обрезается до 15 секунд. Ручное значение также ограничено диапазоном 4–15 секунд.</p>
+            <h3>6. Результаты</h3>
+            <p>Основной файл: MOV Apple ProRes 4444 Rec.709 без звука. Дополнительно создаётся *_tv.mp4 с тем же fps, длительностью и холстом; двухпроходное кодирование удерживает размер не более 64 МБ. Рядом записывается *_qc.json с параметрами и фактическими характеристиками обоих файлов.</p>
+            <h3>7. Очередь</h3>
+            <p>После успешного анализа нажмите «Добавить в очередь». Старт запускает ожидающие задания. Пауза завершает текущий shot и не начинает следующий. Стоп останавливает текущую обработку. «Повторить» создаёт копию задания с теми же зафиксированными параметрами.</p>
+            <h3>8. Безопасность исходников</h3>
+            <p>Plate и .nk открываются только для чтения. Результаты сначала пишутся во временные .part-файлы и публикуются только после успешного завершения. Существующие результаты не перезаписываются: добавляется числовой суффикс.</p>
+            <h3>9. OCIO и Nuke</h3>
+            <p>Приложение не запускает интерфейс Nuke и не использует Nuke для undistort. Из локальной установки берутся Python, PyOpenColorIO и ACES config. Если Nuke/OCIO не найден, приложение покажет ошибку до добавления задания.</p>
+            <h3>10. Обновления</h3>
+            <p>Проверка, скачивание и запуск установщика выполняются в окне приложения. После тихой установки программа перезапускается. Для доступа к GitHub Releases сеть должна разрешать api.github.com и github.com.</p>
           </div>
           <div class="modal-actions">
-            <button id="closeFaqModal" type="button">Закрыть</button>
+            <button id="closeFaqButton" type="button">Закрыть</button>
           </div>
         </div>
       </section>

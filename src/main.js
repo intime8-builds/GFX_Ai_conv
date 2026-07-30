@@ -1,42 +1,48 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = require("electron");
+"use strict";
+
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, net, shell } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Readable } = require("stream");
 const { pathToFileURL } = require("url");
-
 const ffmpegStaticPath = require("ffmpeg-static");
+const {
+  calculateCanvas,
+  calculateDuration,
+  discoverPlate,
+  discoverPlateDirectory,
+  resolveLatestTrack
+} = require("./core/conform");
+const { createSourcePreview, probePlate } = require("./core/media");
+const {
+  buildPythonEnv,
+  findNukeRuntime,
+  runPythonJson
+} = require("./core/runtime");
 
-const REPO_OWNER = "intime8";
+const REPO_OWNER = "intime8-builds";
 const REPO_NAME = "GFX_Ai_conv";
-const SEQUENCE_FPS = 24;
-const CONVERSION_MODES = new Set(["png", "video"]);
-const SRGB_LINEAR_TO_ACES2065_MATRIX = [
-  [0.4396329819, 0.3829886982, 0.1773783199],
-  [0.0897764430, 0.8134394287, 0.0967841283],
-  [0.0175411704, 0.1115465533, 0.8709122763]
-];
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD4SURBVFhH7ZSxEYJQFATpwrbogw5sQKvAwBJISYwowIyMkMAavgwc3hcOxuS+ge7MJnrOPnU0+zNzKE4hpcgSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNdq3DJc+LGjDUW7XIkvUaNNzEzok30lyQPTO+ybk0XN53SQ44Nqi/vm7VSJL1EiZ14+pf6+mx14HTXR1uXqNElmiRsqvH7D1FcyH+Q8oqnAbUwPzpzCY8IDoaxAkOWBU/RcsfpZ7IkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyP0+WPQGxDZvikCMZ/QAAAABJRU5ErkJggg==";
 const appDataRoot = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
 const stableUserDataPath = path.join(appDataRoot, "GFX Ai Conv");
 const logDir = path.join(stableUserDataPath, "logs");
 const previewsDir = path.join(stableUserDataPath, "previews");
 const updatesDir = path.join(stableUserDataPath, "updates");
+const jobsDir = path.join(stableUserDataPath, "jobs");
 const settingsPath = path.join(stableUserDataPath, "settings.json");
 const DEFAULT_SETTINGS = {
-  mode: "png",
+  outputMode: "auto",
   outputDir: "",
-  video: {
-    durationMode: "full",
-    durationSeconds: 4,
-    colorSpace: "aces2065",
-    outputSize: {
-      mode: "source",
-      width: 1920,
-      height: 1080
-    }
-  }
+  lastResolvedOutputDir: "",
+  inputColorSpace: "ACES2065-1",
+  durationMode: "auto",
+  durationSeconds: 4,
+  resolutionMode: "source",
+  denoiseStrength: 1,
+  lastPlateDir: "",
+  lastTrackDir: ""
 };
 
 app.disableHardwareAcceleration();
@@ -45,9 +51,9 @@ app.setPath("userData", stableUserDataPath);
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 app.commandLine.appendSwitch("disable-gpu-program-cache");
 
-fs.mkdirSync(logDir, { recursive: true });
-fs.mkdirSync(previewsDir, { recursive: true });
-fs.mkdirSync(updatesDir, { recursive: true });
+for (const directory of [logDir, previewsDir, updatesDir, jobsDir]) {
+  fs.mkdirSync(directory, { recursive: true });
+}
 
 process.on("uncaughtException", (error) => {
   writeCrashLog("uncaughtException", error);
@@ -59,27 +65,19 @@ process.on("unhandledRejection", (reason) => {
   writeCrashLog("unhandledRejection", reason);
 });
 
-function resolveBundledBinary(binaryPath) {
-  if (!binaryPath) {
-    return binaryPath;
-  }
-
-  return binaryPath.replace("app.asar", "app.asar.unpacked");
-}
-
-const ffmpegPath = resolveBundledBinary(ffmpegStaticPath);
+const ffmpegPath = resolveBundledPath(ffmpegStaticPath);
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
-let activeConversion = null;
+let activeWorker = null;
+let runtimeCache = null;
+let ocioCache = null;
 
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    showMainWindow();
-  });
+  app.on("second-instance", showMainWindow);
 }
 
 function createWindow() {
@@ -88,15 +86,14 @@ function createWindow() {
     return mainWindow;
   }
 
-  const windowIcon = createTrayImage(32);
   const win = new BrowserWindow({
-    width: 1080,
-    height: 760,
-    minWidth: 860,
-    minHeight: 620,
-    backgroundColor: "#0d1117",
+    width: 1240,
+    height: 900,
+    minWidth: 980,
+    minHeight: 720,
+    backgroundColor: "#080808",
     title: "GFX Ai Conv",
-    icon: windowIcon,
+    icon: createTrayImage(32),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -108,12 +105,10 @@ function createWindow() {
 
   mainWindow = win;
   win.on("close", (event) => {
-    if (isQuitting) {
-      return;
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
     }
-
-    event.preventDefault();
-    win.hide();
   });
   win.on("minimize", (event) => {
     event.preventDefault();
@@ -158,9 +153,82 @@ app.on("window-all-closed", () => {
   }
 });
 
+ipcMain.handle("dialog:choosePlate", async () => {
+  const settings = loadSettings();
+  const result = await dialog.showOpenDialog({
+    title: "Выберите исходный plate или один кадр EXR-секвенции",
+    defaultPath: existingDirectory(settings.lastPlateDir),
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Plate, sequence или видео",
+        extensions: ["exr", "dpx", "tif", "tiff", "png", "jpg", "jpeg", "mov", "mp4", "mxf", "avi"]
+      },
+      { name: "Все файлы", extensions: ["*"] }
+    ]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const plate = discoverPlate(result.filePaths[0]);
+  const media = await probePlate(ffmpegPath, plate);
+  saveSettings({
+    ...settings,
+    lastPlateDir: path.dirname(result.filePaths[0])
+  });
+  return { ...plate, media };
+});
+
+ipcMain.handle("dialog:choosePlateFolder", async () => {
+  const settings = loadSettings();
+  const result = await dialog.showOpenDialog({
+    title: "Выберите папку с EXR-секвенцией",
+    defaultPath: existingDirectory(settings.lastPlateDir),
+    properties: ["openDirectory"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const selectedDirectory = result.filePaths[0];
+  const plate = discoverPlateDirectory(selectedDirectory);
+  const media = await probePlate(ffmpegPath, plate);
+  saveSettings({
+    ...settings,
+    lastPlateDir: selectedDirectory
+  });
+
+  return { ...plate, media };
+});
+
+ipcMain.handle("dialog:chooseTrack", async () => {
+  const settings = loadSettings();
+  const result = await dialog.showOpenDialog({
+    title: "Выберите папку шота, 3d_track или camera",
+    defaultPath: existingDirectory(settings.lastTrackDir),
+    properties: ["openDirectory"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const track = resolveLatestTrack(result.filePaths[0]);
+  saveSettings({
+    ...settings,
+    lastTrackDir: result.filePaths[0]
+  });
+  return track;
+});
+
 ipcMain.handle("dialog:chooseOutputDir", async () => {
+  const settings = loadSettings();
   const result = await dialog.showOpenDialog({
     title: "Выберите папку вывода",
+    defaultPath: existingDirectory(settings.outputDir),
     properties: ["openDirectory", "createDirectory"]
   });
 
@@ -171,36 +239,131 @@ ipcMain.handle("dialog:chooseOutputDir", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("shell:openPath", async (_event, targetPath) => {
-  if (!targetPath) {
-    return;
-  }
-
-  await shell.openPath(targetPath);
+ipcMain.handle("ocio:list", async () => {
+  return getOcioInfo();
 });
 
-ipcMain.handle("shell:openExternal", async (_event, url) => {
-  if (!url) {
-    return;
+ipcMain.handle("conform:analyze", async (_event, payload) => {
+  const plate = payload && payload.plate;
+  const track = payload && payload.track;
+  const settings = sanitizeSettings(payload && payload.settings);
+
+  if (!plate || !plate.media || !track || !track.filePath) {
+    throw new Error("Сначала выберите исходный plate и папку трека.");
   }
 
-  await shell.openExternal(url);
+  const durationRequest = settings.durationMode === "custom" ? settings.durationSeconds : null;
+  const duration = calculateDuration(plate.media.durationSeconds, durationRequest);
+  const canvas = calculateCanvas(
+    track,
+    plate.media.width,
+    plate.media.height,
+    settings.resolutionMode
+  );
+  const outputDir = settings.outputMode === "auto"
+    ? deriveOutputDir(track)
+    : settings.outputDir;
+
+  if (!outputDir) {
+    throw new Error("Выберите папку вывода или включите автоматический ai\\conform.");
+  }
+
+  const saved = {
+    ...settings,
+    lastResolvedOutputDir: outputDir
+  };
+  saveSettings(saved);
+
+  return {
+    duration,
+    canvas,
+    outputDir,
+    fps: plate.media.fps,
+    shotName: track.shotName,
+    warnings: buildAnalysisWarnings(plate, track, duration, canvas)
+  };
+});
+
+ipcMain.handle("preview:createSource", async (_event, payload) => {
+  const plate = payload && payload.plate;
+
+  if (!plate) {
+    return null;
+  }
+
+  const outputPath = path.join(previewsDir, `source-${sanitizeFileName(payload.id || Date.now())}.jpg`);
+  await createSourcePreview(ffmpegPath, plate, outputPath);
+  return pathToFileURL(outputPath).href;
+});
+
+ipcMain.handle("preview:createConform", async (_event, payload) => {
+  const job = await buildWorkerJob(payload);
+  const id = sanitizeFileName(payload.id || Date.now());
+  const jobPath = path.join(jobsDir, `preview-${id}.json`);
+  const previewPath = path.join(previewsDir, `conform-${id}.jpg`);
+  fs.writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`, "utf8");
+
+  try {
+    const runtime = getRuntime();
+    const result = await runPythonJson(
+      runtime,
+      bundledPath("vendor", "py311"),
+      bundledPath("backend", "preview_worker.py"),
+      [jobPath, previewPath]
+    );
+    return result.path ? pathToFileURL(result.path).href : null;
+  } finally {
+    safeUnlink(jobPath);
+  }
+});
+
+ipcMain.handle("conform:run", async (event, payload) => {
+  if (activeWorker) {
+    throw new Error("Другая задача уже выполняется.");
+  }
+
+  const job = await buildWorkerJob(payload);
+  const id = String(payload.id || Date.now());
+  const jobPath = path.join(jobsDir, `job-${sanitizeFileName(id)}.json`);
+  fs.writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`, "utf8");
+
+  try {
+    return await runConformWorker(jobPath, id, event.sender);
+  } finally {
+    safeUnlink(jobPath);
+  }
+});
+
+ipcMain.handle("conform:cancel", async () => {
+  if (!activeWorker) {
+    return { ok: true };
+  }
+
+  const worker = activeWorker;
+  worker.cancelled = true;
+  worker.child.kill("SIGTERM");
+  setTimeout(() => {
+    if (worker.child.exitCode === null) {
+      worker.child.kill();
+    }
+  }, 2500);
+  return { ok: true };
+});
+
+ipcMain.handle("shell:openPath", async (_event, targetPath) => {
+  if (targetPath) {
+    await shell.openPath(targetPath);
+  }
 });
 
 ipcMain.handle("app:getVersion", () => app.getVersion());
-
 ipcMain.handle("settings:get", () => loadSettings());
-
 ipcMain.handle("settings:save", (_event, settings) => {
-  const nextSettings = sanitizeSettings(settings);
-  saveSettings(nextSettings);
-  return nextSettings;
+  const clean = sanitizeSettings(settings);
+  saveSettings(clean);
+  return clean;
 });
-
-ipcMain.handle("updates:check", async () => {
-  return checkForUpdates();
-});
-
+ipcMain.handle("updates:check", checkForUpdates);
 ipcMain.handle("updates:downloadAndInstall", async (event) => {
   const result = await checkForUpdates();
 
@@ -209,151 +372,174 @@ ipcMain.handle("updates:downloadAndInstall", async (event) => {
   }
 
   if (!result.hasUpdate || !result.installerAsset) {
-    return { ok: true, installed: false, message: "Нет доступного установщика обновления." };
+    return { ok: true, installed: false };
   }
 
   const installerPath = await downloadUpdateInstaller(result.installerAsset, event.sender);
-  event.sender.send("updates:downloadProgress", {
-    progress: 100,
-    phase: "installing"
-  });
+  event.sender.send("updates:downloadProgress", { progress: 100, phase: "installing" });
   launchSilentInstallerAfterQuit(installerPath);
   isQuitting = true;
   app.quit();
-
-  return { ok: true, installed: true, installerPath };
+  return { ok: true, installed: true };
 });
 
-ipcMain.handle("preview:create", async (_event, payload) => {
-  const inputPath = payload && payload.path;
-  const id = payload && payload.id ? String(payload.id) : `${Date.now()}`;
+async function buildWorkerJob(payload) {
+  const plate = payload && payload.plate;
+  const track = payload && payload.track;
+  const analysis = payload && payload.analysis;
+  const settings = sanitizeSettings(payload && payload.settings);
 
-  if (!inputPath || !fs.existsSync(inputPath)) {
-    return null;
+  if (!plate || !track || !analysis || !analysis.canvas || !analysis.duration) {
+    throw new Error("Задание не проанализировано.");
   }
 
-  const previewPath = path.join(previewsDir, `${sanitizeFileName(id)}.jpg`);
-  const sourcePath = fs.statSync(inputPath).isDirectory()
-    ? findExrSequence(inputPath).firstFile
-    : inputPath;
+  const ocio = await getOcioInfo();
 
-  const args = [
-    "-hide_banner",
-    "-y",
-    "-i",
-    sourcePath,
-    "-map",
-    "0:v:0",
-    "-frames:v",
-    "1",
-    "-vf",
-    "scale=180:-1:flags=lanczos",
-    "-q:v",
-    "3",
-    previewPath
-  ];
-
-  await runFfmpeg(args, { trackActive: false });
-  return pathToFileURL(previewPath).href;
-});
-
-ipcMain.handle("convert:cancel", async () => {
-  if (activeConversion && activeConversion.child) {
-    activeConversion.cancelled = true;
-    activeConversion.child.kill("SIGTERM");
+  if (!ocio.colorSpaces.includes(settings.inputColorSpace)) {
+    throw new Error(`Colorspace '${settings.inputColorSpace}' отсутствует в текущем Nuke OCIO.`);
   }
 
-  return { ok: true };
-});
-
-ipcMain.handle("convert:file", async (event, payload) => {
-  const file = payload && payload.file;
-  const outputDir = payload && payload.outputDir;
-  const mode = payload && payload.mode;
-  const settings = payload && payload.settings ? payload.settings : {};
-
-  if (!file || !file.path) {
-    throw new Error("Не указан входной файл.");
-  }
-
-  if (!outputDir || !fs.existsSync(outputDir)) {
-    throw new Error("Папка вывода не существует.");
-  }
-
-  if (!CONVERSION_MODES.has(mode)) {
-    throw new Error("Неизвестный режим конвертации.");
-  }
-
-  const id = file.id;
-  const inputPath = file.path;
-
-  if (!fs.existsSync(inputPath)) {
-    throw new Error("Входной файл не существует.");
-  }
-
-  event.sender.send("convert:progress", { id, inputPath, progress: 0, status: "converting" });
-  const outputPath = await convertOne(inputPath, outputDir, mode, settings, {
-    id,
-    sender: event.sender
-  });
-  event.sender.send("convert:progress", { id, inputPath, outputPath, progress: 100, status: "done" });
-
-  return { id, inputPath, outputPath, progress: 100, status: "done" };
-});
-
-ipcMain.handle("convert:files", async (event, payload) => {
-  const files = Array.isArray(payload.files) ? payload.files : [];
-  const outputDir = payload.outputDir;
-  const mode = payload.mode;
-  const settings = payload.settings || {};
-
-  if (!outputDir || !fs.existsSync(outputDir)) {
-    throw new Error("Папка вывода не существует.");
-  }
-
-  if (!CONVERSION_MODES.has(mode)) {
-    throw new Error("Неизвестный режим конвертации.");
-  }
-
-  const results = [];
-
-  for (const file of files) {
-    const inputPath = file.path;
-    const id = file.id;
-
-    if (!inputPath || !fs.existsSync(inputPath)) {
-      const errorResult = { id, inputPath, status: "error", error: "Входной файл не существует." };
-      event.sender.send("convert:progress", errorResult);
-      results.push(errorResult);
-      continue;
+  return {
+    ffmpegPath,
+    plate,
+    track,
+    canvas: analysis.canvas,
+    outputDir: analysis.outputDir,
+    shotName: analysis.shotName || track.shotName,
+    fps: analysis.fps,
+    durationSeconds: analysis.duration.targetSeconds,
+    inputColorSpace: settings.inputColorSpace,
+    denoiseStrength: settings.denoiseStrength,
+    ocio: {
+      configPath: ocio.configPath,
+      display: ocio.display,
+      view: ocio.view
     }
+  };
+}
 
-    event.sender.send("convert:progress", { id, inputPath, status: "converting" });
+function runConformWorker(jobPath, id, sender) {
+  return new Promise((resolve, reject) => {
+    const runtime = getRuntime();
+    const child = spawn(runtime.python, [bundledPath("backend", "conform_worker.py"), jobPath], {
+      env: buildPythonEnv(runtime, bundledPath("vendor", "py311")),
+      windowsHide: true
+    });
+    const workerState = { child, cancelled: false };
+    activeWorker = workerState;
+    let stdoutBuffer = "";
+    let stderr = "";
+    let result = null;
+    let workerError = null;
 
-    try {
-      const outputPath = await convertOne(inputPath, outputDir, mode, settings, {
-        id,
-        sender: event.sender
+    child.stdout.on("data", (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+
+        try {
+          const message = JSON.parse(line);
+
+          if (message.type === "progress") {
+            sender.send("conform:progress", { id, ...message });
+          } else if (message.type === "result") {
+            result = message;
+          } else if (message.type === "error") {
+            workerError = message.message;
+          }
+        } catch (_error) {
+          stderr += `${line}\n`;
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (activeWorker === workerState) {
+        activeWorker = null;
+      }
+
+      if (workerState.cancelled) {
+        reject(new Error("Конвертация остановлена."));
+        return;
+      }
+
+      if (code !== 0 || !result) {
+        reject(new Error(workerError || compactError(stderr) || `Backend завершился с кодом ${code}.`));
+        return;
+      }
+
+      resolve({
+        status: "done",
+        progress: 100,
+        mainPath: result.mainPath,
+        topviewPath: result.topviewPath,
+        reportPath: result.reportPath
       });
-      const doneResult = { id, inputPath, outputPath, status: "done" };
-      event.sender.send("convert:progress", doneResult);
-      results.push(doneResult);
-    } catch (error) {
-      const failResult = { id, inputPath, status: "error", error: error.message };
-      event.sender.send("convert:progress", failResult);
-      results.push(failResult);
-    }
+    });
+  });
+}
+
+function getRuntime() {
+  if (!runtimeCache) {
+    runtimeCache = findNukeRuntime();
+  }
+  return runtimeCache;
+}
+
+async function getOcioInfo() {
+  if (!ocioCache) {
+    const runtime = getRuntime();
+    ocioCache = await runPythonJson(
+      runtime,
+      bundledPath("vendor", "py311"),
+      bundledPath("backend", "ocio_probe.py"),
+      [runtime.ocioConfig]
+    );
+    ocioCache.runtime = runtime.version;
+  }
+  return ocioCache;
+}
+
+function deriveOutputDir(track) {
+  const shotRoot = path.resolve(track.cameraDir, "..", "..");
+  return path.join(shotRoot, "ai", "conform");
+}
+
+function buildAnalysisWarnings(plate, track, duration, canvas) {
+  const warnings = [];
+
+  if (track.animated) {
+    warnings.push(`Трек анимирован: ${track.firstCurveFrame}–${track.lastCurveFrame}. ST-map считается для каждого кадра.`);
+  }
+  if (duration.padded) {
+    warnings.push("Короткий plate будет дополнен последним кадром.");
+  }
+  if (duration.truncated) {
+    warnings.push("Plate длиннее выбранной длительности и будет обрезан.");
+  }
+  if (canvas.resolutionMode === "hd" && (plate.media.width !== 1920 || plate.media.height !== 1080)) {
+    warnings.push("До undistort plate будет нормализован в базу 1920×1080.");
+  }
+  if (canvas.resolutionMode === "source" && (plate.media.width > 1920 || plate.media.height > 1080)) {
+    warnings.push("Сохранён исходный пиксельный масштаб; 4K не уменьшается до 1920×1080.");
   }
 
-  return results;
-});
+  return warnings;
+}
 
 async function checkForUpdates() {
   const currentVersion = app.getVersion();
-  const latestUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 
   try {
-    const response = await fetch(latestUrl, {
+    const response = await net.fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`, {
       headers: {
         "Accept": "application/vnd.github+json",
         "User-Agent": `${REPO_NAME}/${currentVersion}`
@@ -361,14 +547,8 @@ async function checkForUpdates() {
     });
 
     if (response.status === 404) {
-      return {
-        ok: true,
-        hasUpdate: false,
-        currentVersion,
-        message: "В GitHub Releases пока нет релизов."
-      };
+      return { ok: true, hasUpdate: false, currentVersion };
     }
-
     if (!response.ok) {
       throw new Error(`GitHub вернул статус ${response.status}`);
     }
@@ -384,7 +564,6 @@ async function checkForUpdates() {
       currentVersion,
       latestVersion,
       hasUpdate: isNewerVersion(latestVersion, currentVersion),
-      releaseUrl: release.html_url,
       releaseName: release.name || release.tag_name,
       installerAsset: installerAsset
         ? {
@@ -395,23 +574,13 @@ async function checkForUpdates() {
         : null
     };
   } catch (error) {
-    return {
-      ok: false,
-      currentVersion,
-      error: error.message
-    };
+    return { ok: false, currentVersion, error: error.message };
   }
 }
 
 async function downloadUpdateInstaller(asset, sender) {
-  if (!asset || !asset.downloadUrl || !asset.name) {
-    throw new Error("В последнем релизе нет файла установщика.");
-  }
-
-  const response = await fetch(asset.downloadUrl, {
-    headers: {
-      "User-Agent": `${REPO_NAME}/${app.getVersion()}`
-    }
+  const response = await net.fetch(asset.downloadUrl, {
+    headers: { "User-Agent": `${REPO_NAME}/${app.getVersion()}` }
   });
 
   if (!response.ok || !response.body) {
@@ -428,7 +597,6 @@ async function downloadUpdateInstaller(asset, sender) {
     Readable.fromWeb(response.body)
       .on("data", (chunk) => {
         downloadedBytes += chunk.length;
-
         if (sender && totalBytes > 0) {
           sender.send("updates:downloadProgress", {
             downloadedBytes,
@@ -444,50 +612,33 @@ async function downloadUpdateInstaller(asset, sender) {
   });
 
   fs.renameSync(tmpPath, installerPath);
-  if (sender) {
-    sender.send("updates:downloadProgress", {
-      downloadedBytes,
-      totalBytes,
-      progress: 100
-    });
-  }
-
   return installerPath;
 }
 
 function launchSilentInstallerAfterQuit(installerPath) {
   const helperPath = path.join(updatesDir, "install-update.ps1");
-  const currentExePath = process.execPath;
-  const currentPid = process.pid;
   const script = [
-    `$ErrorActionPreference = 'SilentlyContinue'`,
-    `$pidToWait = ${currentPid}`,
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$pidToWait = ${process.pid}`,
     `$installer = '${escapePowerShellString(installerPath)}'`,
-    `$appExe = '${escapePowerShellString(currentExePath)}'`,
-    `Wait-Process -Id $pidToWait -Timeout 30`,
-    `Start-Process -FilePath $installer -ArgumentList '/S' -Wait`,
-    `Start-Sleep -Seconds 2`,
-    `if (Test-Path $appExe) { Start-Process -FilePath $appExe }`
+    `$appExe = '${escapePowerShellString(process.execPath)}'`,
+    "Wait-Process -Id $pidToWait -Timeout 30",
+    "Start-Process -FilePath $installer -ArgumentList '/S' -Wait",
+    "Start-Sleep -Seconds 2",
+    "if (Test-Path $appExe) { Start-Process -FilePath $appExe }"
   ].join("\r\n");
 
   fs.writeFileSync(helperPath, script, "utf8");
   spawn("powershell.exe", [
     "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-WindowStyle",
-    "Hidden",
-    "-File",
-    helperPath
+    "-ExecutionPolicy", "Bypass",
+    "-WindowStyle", "Hidden",
+    "-File", helperPath
   ], {
     detached: true,
     stdio: "ignore",
     windowsHide: true
   }).unref();
-}
-
-function escapePowerShellString(value) {
-  return String(value).replace(/'/g, "''");
 }
 
 function createTray() {
@@ -497,65 +648,15 @@ function createTray() {
 
   tray = new Tray(createTrayImage(16));
   tray.setToolTip("GFX Ai Conv");
-  tray.setContextMenu(buildTrayMenu());
-  tray.on("click", showMainWindow);
-  tray.on("double-click", showMainWindow);
-}
-
-function buildTrayMenu() {
-  return Menu.buildFromTemplate([
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Открыть", click: showMainWindow },
     {
-      label: "Открыть",
-      click: showMainWindow
-    },
-    {
-      label: "Открыть папку вывода",
+      label: "Открыть последнюю папку вывода",
       click: () => {
-        const outputDir = loadSettings().outputDir;
-
+        const outputDir = loadSettings().lastResolvedOutputDir;
         if (outputDir && fs.existsSync(outputDir)) {
           shell.openPath(outputDir);
-          return;
         }
-
-        dialog.showMessageBox({
-          type: "info",
-          title: "GFX Ai Conv",
-          message: "Папка вывода пока не выбрана."
-        });
-      }
-    },
-    {
-      label: "Проверить обновления",
-      click: async () => {
-        const result = await checkForUpdates();
-
-        if (result.ok && result.hasUpdate && result.installerAsset) {
-          const answer = await dialog.showMessageBox({
-            type: "info",
-            title: "GFX Ai Conv",
-            message: `Доступна версия ${result.releaseName || result.latestVersion}.`,
-            detail: "Скачать установщик и запустить установку сейчас?",
-            buttons: ["Скачать", "Позже"],
-            defaultId: 0,
-            cancelId: 1
-          });
-
-          if (answer.response === 0) {
-            const installerPath = await downloadUpdateInstaller(result.installerAsset, mainWindow ? mainWindow.webContents : null);
-            launchSilentInstallerAfterQuit(installerPath);
-            isQuitting = true;
-            app.quit();
-          }
-
-          return;
-        }
-
-        dialog.showMessageBox({
-          type: result.ok ? "info" : "warning",
-          title: "GFX Ai Conv",
-          message: result.ok ? "Установлена последняя версия." : `Не удалось проверить обновления: ${result.error}`
-        });
       }
     },
     { type: "separator" },
@@ -566,16 +667,16 @@ function buildTrayMenu() {
         app.quit();
       }
     }
-  ]);
+  ]));
+  tray.on("click", showMainWindow);
+  tray.on("double-click", showMainWindow);
 }
 
 function showMainWindow() {
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow();
-
   if (win.isMinimized()) {
     win.restore();
   }
-
   win.show();
   win.focus();
 }
@@ -584,469 +685,51 @@ function createTrayImage(size) {
   return nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: size, height: size });
 }
 
-async function convertOne(inputPath, outputDir, mode, settings, progress = {}) {
-  const inputStats = fs.statSync(inputPath);
-
-  if (inputStats.isDirectory()) {
-    return convertDirectory(inputPath, outputDir, mode, settings, progress);
-  }
-
-  if (mode === "png") {
-    const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
-    const filters = buildPngFilters(settings);
-    const args = [
-      "-hide_banner",
-      "-y",
-      "-i",
-      inputPath,
-      "-map",
-      "0:v:0",
-      "-frames:v",
-      "1",
-      "-vf",
-      filters,
-      "-update",
-      "1",
-      "-compression_level",
-      "6",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "iec61966-2-1",
-      "-colorspace",
-      "rgb",
-      outputPath
-    ];
-
-    await runFfmpeg(args, progress);
-    return outputPath;
-  }
-
-  const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
-  const duration = getRequestedDurationSeconds(settings);
-  const progressDuration = duration || await getInputDurationSeconds(inputPath);
-  const filters = buildVideoFilters(settings);
-  const losslessArgs = buildLosslessH264Args();
-
-  const args = [
-    "-hide_banner",
-    "-y",
-    ...buildDurationInputArgs(duration),
-    "-i",
-    inputPath,
-    ...buildDurationOutputArgs(duration),
-    "-map",
-    "0:v:0",
-    "-an",
-    "-vf",
-    filters,
-    "-c:v",
-    "libx264",
-    ...losslessArgs,
-    "-profile:v",
-    "high10",
-    "-pix_fmt",
-    "yuv420p10le",
-    "-color_primaries",
-    "bt709",
-    "-color_trc",
-    "iec61966-2-1",
-    "-colorspace",
-    "bt709",
-    "-movflags",
-    "+faststart",
-    outputPath
-  ];
-
-  await runFfmpeg(withProgressArgs(args), {
-    ...progress,
-    durationSeconds: progressDuration
-  });
-  return outputPath;
-}
-
-async function convertDirectory(inputPath, outputDir, mode, settings, progress = {}) {
-  const sequence = findExrSequence(inputPath);
-
-  if (mode === "png") {
-    const outputPath = uniqueOutputPath(outputDir, inputPath, ".png");
-    const filters = buildPngFilters(settings);
-    const args = [
-      "-hide_banner",
-      "-y",
-      "-i",
-      sequence.firstFile,
-      "-map",
-      "0:v:0",
-      "-frames:v",
-      "1",
-      "-vf",
-      filters,
-      "-update",
-      "1",
-      "-compression_level",
-      "6",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "iec61966-2-1",
-      "-colorspace",
-      "rgb",
-      outputPath
-    ];
-
-    await runFfmpeg(args, progress);
-    return outputPath;
-  }
-
-  const outputPath = uniqueOutputPath(outputDir, inputPath, ".mp4", "_h264");
-  const duration = getRequestedDurationSeconds(settings);
-  const filters = buildVideoFilters(settings);
-  const losslessArgs = buildLosslessH264Args();
-
-  const args = [
-    "-hide_banner",
-    "-y",
-    ...buildDurationInputArgs(duration),
-    "-framerate",
-    String(SEQUENCE_FPS),
-    "-start_number",
-    String(sequence.startNumber),
-    "-i",
-    sequence.pattern,
-    ...buildDurationOutputArgs(duration),
-    "-map",
-    "0:v:0",
-    "-an",
-    "-vf",
-    filters,
-    "-c:v",
-    "libx264",
-    ...losslessArgs,
-    "-profile:v",
-    "high10",
-    "-pix_fmt",
-    "yuv420p10le",
-    "-color_primaries",
-    "bt709",
-    "-color_trc",
-    "iec61966-2-1",
-    "-colorspace",
-    "bt709",
-    "-movflags",
-    "+faststart",
-    outputPath
-  ];
-
-  await runFfmpeg(withProgressArgs(args), {
-    ...progress,
-    durationSeconds: duration || sequence.frameCount / SEQUENCE_FPS
-  });
-  return outputPath;
-}
-
-function buildLosslessH264Args() {
-  return ["-preset", "slow", "-crf", "0"];
-}
-
-function buildPngFilters(settings) {
-  return [
-    buildResizeFilter(settings, { forceEven: false }),
-    "format=rgba64be"
-  ].filter(Boolean).join(",");
-}
-
-function buildVideoFilters(settings) {
-  const filters = [
-    buildResizeFilter(settings, { forceEven: true }) || "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos"
-  ];
-
-  if (settings && settings.colorSpace === "aces2065") {
-    filters.push(buildAces2065H264Filter());
-  }
-
-  filters.push("format=yuv420p10le");
-  return filters.join(",");
-}
-
-function buildAces2065H264Filter() {
-  const matrix = SRGB_LINEAR_TO_ACES2065_MATRIX;
-  return [
-    "zscale=matrixin=bt709:transferin=iec61966-2-1:primariesin=bt709:matrix=gbr:transfer=linear:primaries=bt709:range=full",
-    "format=gbrpf32le",
-    [
-      "colorchannelmixer",
-      `rr=${matrix[0][0]}`,
-      `rg=${matrix[0][1]}`,
-      `rb=${matrix[0][2]}`,
-      `gr=${matrix[1][0]}`,
-      `gg=${matrix[1][1]}`,
-      `gb=${matrix[1][2]}`,
-      `br=${matrix[2][0]}`,
-      `bg=${matrix[2][1]}`,
-      `bb=${matrix[2][2]}`
-    ].join(":")
-  ].join(",");
-}
-
-function buildResizeFilter(settings, options = {}) {
-  const size = getRequestedOutputSize(settings);
-
-  if (!size) {
-    return null;
-  }
-
-  const width = options.forceEven ? Math.max(2, Math.floor(size.width / 2) * 2) : size.width;
-  const height = options.forceEven ? Math.max(2, Math.floor(size.height / 2) * 2) : size.height;
-  return `scale=${width}:${height}:flags=lanczos`;
-}
-
-function getRequestedOutputSize(settings) {
-  const outputSize = settings && settings.outputSize && typeof settings.outputSize === "object"
-    ? settings.outputSize
-    : null;
-
-  if (!outputSize || outputSize.mode !== "custom") {
-    return null;
-  }
-
+function sanitizeSettings(settings) {
+  const incoming = settings && typeof settings === "object" ? settings : {};
   return {
-    width: clampInteger(outputSize.width, 1, 16384, DEFAULT_SETTINGS.video.outputSize.width),
-    height: clampInteger(outputSize.height, 1, 16384, DEFAULT_SETTINGS.video.outputSize.height)
+    outputMode: incoming.outputMode === "manual" ? "manual" : "auto",
+    outputDir: stringValue(incoming.outputDir),
+    lastResolvedOutputDir: stringValue(incoming.lastResolvedOutputDir),
+    inputColorSpace: stringValue(incoming.inputColorSpace) || "ACES2065-1",
+    durationMode: incoming.durationMode === "custom" ? "custom" : "auto",
+    durationSeconds: clampInteger(incoming.durationSeconds, 4, 15, 4),
+    resolutionMode: incoming.resolutionMode === "hd" ? "hd" : "source",
+    denoiseStrength: clampNumber(incoming.denoiseStrength, 0, 2, 1),
+    lastPlateDir: stringValue(incoming.lastPlateDir),
+    lastTrackDir: stringValue(incoming.lastTrackDir)
   };
 }
 
-function getRequestedDurationSeconds(settings) {
-  if (!settings || settings.durationMode !== "custom") {
-    return null;
-  }
-
-  return clampInteger(settings.durationSeconds, 1, 86400, 4);
-}
-
-function buildDurationInputArgs(duration) {
-  return duration ? ["-stream_loop", "-1"] : [];
-}
-
-function buildDurationOutputArgs(duration) {
-  return duration ? ["-t", String(duration)] : [];
-}
-
-function withProgressArgs(args) {
-  const [firstArg, ...restArgs] = args;
-  return [firstArg, "-nostats", "-progress", "pipe:1", ...restArgs];
-}
-
-function runFfmpeg(args, progress = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegPath, args, {
-      windowsHide: true
-    });
-
-    if (progress.trackActive !== false) {
-      activeConversion = { child, cancelled: false };
+function loadSettings() {
+  try {
+    if (!fs.existsSync(settingsPath)) {
+      return { ...DEFAULT_SETTINGS };
     }
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      const lines = chunk.toString().split(/\r?\n/);
-
-      for (const line of lines) {
-        const [key, value] = line.split("=");
-
-        if (!key || !value || !progress.sender || !progress.id || !progress.durationSeconds) {
-          continue;
-        }
-
-        const seconds = parseProgressSeconds(key, value);
-
-        if (seconds === null) {
-          continue;
-        }
-
-        const percent = Math.max(0, Math.min(99, Math.floor((seconds / progress.durationSeconds) * 100)));
-        progress.sender.send("convert:progress", {
-          id: progress.id,
-          progress: percent,
-          status: "converting"
-        });
-      }
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", reject);
-
-    child.on("close", (code) => {
-      const cancelled = activeConversion && activeConversion.child === child && activeConversion.cancelled;
-
-      if (activeConversion && activeConversion.child === child) {
-        activeConversion = null;
-      }
-
-      if (cancelled) {
-        reject(new Error("Конвертация остановлена."));
-        return;
-      }
-
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(compactFfmpegError(stderr) || `FFmpeg завершился с кодом ${code}.`));
-    });
-  });
+    return sanitizeSettings(JSON.parse(fs.readFileSync(settingsPath, "utf8")));
+  } catch (error) {
+    writeCrashLog("settingsLoad", error);
+    return { ...DEFAULT_SETTINGS };
+  }
 }
 
-function parseProgressSeconds(key, value) {
-  if (key === "out_time_us" || key === "out_time_ms") {
-    const number = Number.parseInt(value, 10);
-    return Number.isNaN(number) ? null : number / 1000000;
-  }
-
-  if (key === "out_time") {
-    const match = value.match(/^(\d+):(\d+):(\d+(?:\.\d+)?)$/);
-
-    if (!match) {
-      return null;
-    }
-
-    return (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]);
-  }
-
-  return null;
+function saveSettings(settings) {
+  const clean = sanitizeSettings(settings);
+  const tmpPath = `${settingsPath}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(clean, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, settingsPath);
 }
 
-function findExrSequence(directoryPath) {
-  const entries = fs.readdirSync(directoryPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exr"));
-
-  if (entries.length === 0) {
-    throw new Error("В папке нет EXR-файлов.");
-  }
-
-  const groups = new Map();
-
-  for (const entry of entries) {
-    const match = entry.name.match(/^(.*?)(\d+)(\.exr)$/i);
-
-    if (!match) {
-      continue;
-    }
-
-    const [, prefix, digits, suffix] = match;
-    const key = `${prefix}\u0000${digits.length}\u0000${suffix.toLowerCase()}`;
-    const group = groups.get(key) || {
-      prefix,
-      suffix,
-      width: digits.length,
-      frames: []
-    };
-
-    group.frames.push({
-      number: Number.parseInt(digits, 10),
-      name: entry.name
-    });
-    groups.set(key, group);
-  }
-
-  const sequence = Array.from(groups.values())
-    .sort((left, right) => right.frames.length - left.frames.length)[0];
-
-  if (!sequence || sequence.frames.length === 0) {
-    throw new Error("EXR-файлы должны быть пронумерованы, например shot_0001.exr.");
-  }
-
-  const frames = sequence.frames
-    .sort((left, right) => left.number - right.number)
-    .filter((frame, index, list) => index === 0 || frame.number !== list[index - 1].number);
-  const startNumber = frames[0].number;
-
-  for (let index = 0; index < frames.length; index += 1) {
-    const expected = startNumber + index;
-
-    if (frames[index].number !== expected) {
-      throw new Error(`В EXR-секвенции пропущен кадр ${expected}.`);
-    }
-  }
-
-  const patternName = `${sequence.prefix}%0${sequence.width}d${sequence.suffix}`;
-
-  return {
-    startNumber,
-    firstFile: path.join(directoryPath, frames[0].name),
-    pattern: normalizeFfmpegPath(path.join(directoryPath, patternName)),
-    frameCount: frames.length
-  };
+function bundledPath(...segments) {
+  return resolveBundledPath(path.join(app.getAppPath(), ...segments));
 }
 
-function getInputDurationSeconds(inputPath) {
-  return new Promise((resolve) => {
-    const child = spawn(ffmpegPath, ["-hide_banner", "-i", inputPath], {
-      windowsHide: true
-    });
-    let stderr = "";
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", () => resolve(null));
-    child.on("close", () => {
-      const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-
-      if (!match) {
-        resolve(null);
-        return;
-      }
-
-      resolve((Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]));
-    });
-  });
+function resolveBundledPath(value) {
+  return String(value || "").replace("app.asar", "app.asar.unpacked");
 }
 
-function normalizeFfmpegPath(filePath) {
-  return filePath.replace(/\\/g, "/");
-}
-
-function uniqueOutputPath(outputDir, inputPath, extension, suffix = "") {
-  const parsed = path.parse(inputPath);
-  const safeName = sanitizeFileName(parsed.name) || "converted";
-  let candidate = path.join(outputDir, `${safeName}${suffix}${extension}`);
-  let index = 1;
-
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(outputDir, `${safeName}${suffix}_${index}${extension}`);
-    index += 1;
-  }
-
-  return candidate;
-}
-
-function sanitizeFileName(fileName) {
-  return String(fileName || "").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
-}
-
-function compactFfmpegError(stderr) {
-  const lines = stderr
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  return lines.slice(-8).join("\n");
-}
-
-function clampInteger(value, min, max, fallback) {
-  const number = Number.parseInt(value, 10);
-
-  if (Number.isNaN(number)) {
-    return fallback;
-  }
-
-  return Math.min(max, Math.max(min, number));
+function existingDirectory(value) {
+  return value && fs.existsSync(value) ? value : undefined;
 }
 
 function normalizeVersion(version) {
@@ -1056,79 +739,60 @@ function normalizeVersion(version) {
 function isNewerVersion(latest, current) {
   const latestParts = normalizeVersion(latest).split(".").map((part) => Number.parseInt(part, 10) || 0);
   const currentParts = normalizeVersion(current).split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const length = Math.max(latestParts.length, currentParts.length);
+  const count = Math.max(latestParts.length, currentParts.length);
 
-  for (let index = 0; index < length; index += 1) {
-    const latestPart = latestParts[index] || 0;
-    const currentPart = currentParts[index] || 0;
-
-    if (latestPart > currentPart) {
-      return true;
-    }
-
-    if (latestPart < currentPart) {
-      return false;
+  for (let index = 0; index < count; index += 1) {
+    if ((latestParts[index] || 0) !== (currentParts[index] || 0)) {
+      return (latestParts[index] || 0) > (currentParts[index] || 0);
     }
   }
-
   return false;
 }
 
-function loadSettings() {
+function compactError(value) {
+  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-8).join("\n");
+}
+
+function sanitizeFileName(value) {
+  return String(value || "").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").trim();
+}
+
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number.parseInt(value, 10);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
+
+function escapePowerShellString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function safeUnlink(filePath) {
   try {
-    if (!fs.existsSync(settingsPath)) {
-      return { ...DEFAULT_SETTINGS, video: { ...DEFAULT_SETTINGS.video } };
-    }
-
-    const raw = fs.readFileSync(settingsPath, "utf8");
-    return sanitizeSettings(JSON.parse(raw));
-  } catch (error) {
-    writeCrashLog("settingsLoad", error);
-    return { ...DEFAULT_SETTINGS, video: { ...DEFAULT_SETTINGS.video } };
+    fs.unlinkSync(filePath);
+  } catch (_error) {
+    // Temporary file cleanup is best-effort.
   }
-}
-
-function saveSettings(settings) {
-  const tmpPath = `${settingsPath}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, settingsPath);
-}
-
-function sanitizeSettings(settings) {
-  const incoming = settings && typeof settings === "object" ? settings : {};
-  const incomingVideo = incoming.video && typeof incoming.video === "object" ? incoming.video : {};
-  const incomingOutputSize = incomingVideo.outputSize && typeof incomingVideo.outputSize === "object"
-    ? incomingVideo.outputSize
-    : {};
-  const mode = CONVERSION_MODES.has(incoming.mode) ? incoming.mode : "png";
-  const outputDir = typeof incoming.outputDir === "string" ? incoming.outputDir : "";
-  const durationMode = incomingVideo.durationMode === "custom" ? "custom" : "full";
-  const colorSpace = incomingVideo.colorSpace === "srgb" ? "srgb" : "aces2065";
-  const outputSizeMode = incomingOutputSize.mode === "custom" ? "custom" : "source";
-
-  return {
-    mode,
-    outputDir,
-    video: {
-      durationMode,
-      durationSeconds: clampInteger(incomingVideo.durationSeconds, 1, 86400, DEFAULT_SETTINGS.video.durationSeconds),
-      colorSpace,
-      outputSize: {
-        mode: outputSizeMode,
-        width: clampInteger(incomingOutputSize.width, 1, 16384, DEFAULT_SETTINGS.video.outputSize.width),
-        height: clampInteger(incomingOutputSize.height, 1, 16384, DEFAULT_SETTINGS.video.outputSize.height)
-      }
-    }
-  };
 }
 
 function writeCrashLog(kind, error) {
   try {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const message = error && error.stack ? error.stack : String(error);
-    const body = `[${new Date().toISOString()}] ${kind}\n${message}\n`;
-    fs.writeFileSync(path.join(logDir, `${timestamp}-${kind}.log`), body, "utf8");
+    fs.writeFileSync(
+      path.join(logDir, `${timestamp}-${kind}.log`),
+      `[${new Date().toISOString()}] ${kind}\n${message}\n`,
+      "utf8"
+    );
   } catch (_error) {
-    // Nothing else is safe to do here.
+    // No safer recovery is available here.
   }
 }
