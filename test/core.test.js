@@ -13,6 +13,7 @@ const {
   distortToUndistortUnit,
   resolveLatestTrack
 } = require("../src/core/conform");
+const { buildSourcePreviewJob } = require("../src/core/media");
 const { evaluateTrack, parseNkText } = require("../src/core/nk-parser");
 const { createLogger, summarizeValue } = require("../src/core/logger");
 
@@ -135,6 +136,37 @@ test("latest track version and continuous EXR sequence are discovered", (context
   const folderPlate = discoverPlateDirectory(plateDir);
   assert.equal(folderPlate.frameCount, 3);
   assert.match(folderPlate.displayName, /^SHOT_0010/);
+});
+
+test("source preview uses the selected OCIO display transform", () => {
+  const plate = {
+    kind: "sequence",
+    fps: 24,
+    media: { width: 3840, height: 2160, fps: 24 }
+  };
+  const ocio = {
+    configPath: "C:\\Nuke\\aces.ocio",
+    display: "Rec.1886 Rec.709 - Display",
+    view: "ACES 2.0 - SDR 100 nits (Rec.709)"
+  };
+  const job = buildSourcePreviewJob({
+    ffmpegPath: "ffmpeg.exe",
+    plate,
+    inputColorSpace: "ACES2065-1",
+    ocio
+  });
+
+  assert.equal(job.inputColorSpace, "ACES2065-1");
+  assert.deepEqual(job.ocio, ocio);
+  assert.deepEqual(job.canvas, {
+    baseWidth: 3840,
+    baseHeight: 2160,
+    width: 3840,
+    height: 2160,
+    left: 0,
+    top: 0
+  });
+  assert.equal(job.track, undefined);
 });
 
 test("structured logger records events and rotates bounded files", (context) => {

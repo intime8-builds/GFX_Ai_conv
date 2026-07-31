@@ -1,7 +1,5 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
 const { spawn } = require("child_process");
 
 function probePlate(ffmpegPath, plate) {
@@ -72,48 +70,44 @@ function parseDuration(text) {
   return (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]);
 }
 
-function createSourcePreview(ffmpegPath, plate, outputPath) {
-  const sourcePath = plate.firstFile || plate.inputPath;
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+function buildSourcePreviewJob({ ffmpegPath, plate, inputColorSpace, ocio }) {
+  if (!plate || !plate.media) {
+    throw new Error("Исходный plate не проанализирован.");
+  }
 
-  return runProcess(ffmpegPath, [
-    "-hide_banner",
-    "-loglevel", "error",
-    "-y",
-    "-i", sourcePath,
-    "-map", "0:v:0",
-    "-frames:v", "1",
-    "-vf", "scale=640:-2:flags=lanczos",
-    "-q:v", "3",
-    outputPath
-  ]).then(() => outputPath);
-}
+  const width = Number(plate.media.width);
+  const height = Number(plate.media.height);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    throw new Error("Не удалось определить размер исходного plate.");
+  }
+  if (!inputColorSpace || !ocio || !ocio.configPath || !ocio.display || !ocio.view) {
+    throw new Error("Не заданы параметры OCIO для исходного preview.");
+  }
 
-function runProcess(executable, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { windowsHide: true });
-    let stderr = "";
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      const message = stderr.split(/\r?\n/).filter(Boolean).slice(-8).join("\n");
-      reject(new Error(message || `FFmpeg завершился с кодом ${code}.`));
-    });
-  });
+  return {
+    ffmpegPath,
+    plate,
+    canvas: {
+      baseWidth: Math.round(width),
+      baseHeight: Math.round(height),
+      width: Math.round(width),
+      height: Math.round(height),
+      left: 0,
+      top: 0
+    },
+    fps: Number(plate.media.fps || plate.fps || 24),
+    inputColorSpace,
+    ocio: {
+      configPath: ocio.configPath,
+      display: ocio.display,
+      view: ocio.view
+    }
+  };
 }
 
 module.exports = {
-  createSourcePreview,
+  buildSourcePreviewJob,
   parseDuration,
   parseFps,
-  probePlate,
-  runProcess
+  probePlate
 };

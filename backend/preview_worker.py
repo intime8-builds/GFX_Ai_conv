@@ -11,11 +11,14 @@ import conform_worker as worker
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: preview_worker.py JOB.json OUTPUT.jpg")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit("usage: preview_worker.py JOB.json OUTPUT.jpg [source|conform]")
 
     job = json.loads(Path(sys.argv[1]).read_text(encoding="utf8"))
     output_path = Path(sys.argv[2]).resolve()
+    mode = sys.argv[3] if len(sys.argv) == 4 else "conform"
+    if mode not in ("source", "conform"):
+        raise RuntimeError(f"Неизвестный режим preview: {mode}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas = job["canvas"]
     decoder = worker.start_process(worker.decoder_command(job), stdout=subprocess.PIPE)
@@ -32,12 +35,15 @@ def main() -> int:
     if frame is None:
         raise RuntimeError("FFmpeg не прочитал preview-кадр.")
 
-    track = job["track"]
-    frame_number = job["plate"].get("startNumber") or track.get("firstCurveFrame") or 1
-    parameters = worker.parameters_at(track, float(frame_number))
-    map_x, map_y = worker.make_remap(job, parameters)
-    undistorted = worker.remap_bilinear(frame, map_x, map_y)
-    rgba = worker.apply_ocio(undistorted, worker.create_ocio_processor(job))
+    preview_frame = frame
+    if mode == "conform":
+        track = job["track"]
+        frame_number = job["plate"].get("startNumber") or track.get("firstCurveFrame") or 1
+        parameters = worker.parameters_at(track, float(frame_number))
+        map_x, map_y = worker.make_remap(job, parameters)
+        preview_frame = worker.remap_bilinear(frame, map_x, map_y)
+
+    rgba = worker.apply_ocio(preview_frame, worker.create_ocio_processor(job))
     payload = worker.packed_rgba_to_planar(rgba)
     command = [
         job["ffmpegPath"],

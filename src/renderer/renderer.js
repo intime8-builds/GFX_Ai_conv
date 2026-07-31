@@ -131,7 +131,9 @@ function bindEvents() {
 
   elements.colorSpaceInput.addEventListener("change", async () => {
     state.settings.inputColorSpace = elements.colorSpaceInput.value;
-    await saveSettingsAndAnalyze();
+    await saveSettings();
+    createSourcePreview();
+    await analyzeCurrent();
   });
 
   elements.resolutionModeInput.addEventListener("change", async () => {
@@ -229,15 +231,7 @@ async function choosePlate(sourceType) {
     elements.platePath.value = plate.selectedPath;
     state.settings.lastPlateDir = parentDirectory(plate.selectedPath);
     renderSetup();
-    const previewId = crypto.randomUUID();
-    window.gfxConv.createSourcePreview({ plate, id: previewId })
-      .then((url) => {
-        if (state.plate === plate && url) {
-          state.sourcePreviewUrl = url;
-          renderPreviews();
-        }
-      })
-      .catch(() => {});
+    createSourcePreview();
     await analyzeCurrent();
   } catch (error) {
     showToast(error.message || "Не удалось открыть plate.");
@@ -323,6 +317,38 @@ async function analyzeCurrent() {
       elements.setupStatus.textContent = error.message || "Анализ не выполнен.";
       showToast(error.message || "Анализ не выполнен.");
       renderSetup();
+    }
+  }
+}
+
+async function createSourcePreview() {
+  const plate = state.plate;
+  const inputColorSpace = state.settings.inputColorSpace;
+  if (!plate || !state.colorInfo) {
+    return;
+  }
+
+  state.sourcePreviewUrl = "";
+  elements.sourcePreview.innerHTML = "<span>Применяю OCIO к исходному plate…</span>";
+
+  try {
+    const url = await window.gfxConv.createSourcePreview({
+      id: crypto.randomUUID(),
+      plate,
+      settings: state.settings
+    });
+
+    if (
+      state.plate === plate
+      && state.settings.inputColorSpace === inputColorSpace
+      && url
+    ) {
+      state.sourcePreviewUrl = url;
+      renderPreviews();
+    }
+  } catch (error) {
+    if (state.plate === plate && state.settings.inputColorSpace === inputColorSpace) {
+      elements.sourcePreview.innerHTML = `<span>${escapeHtml(error.message || "Превью недоступно")}</span>`;
     }
   }
 }

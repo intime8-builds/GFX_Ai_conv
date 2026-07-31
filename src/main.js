@@ -15,7 +15,7 @@ const {
   discoverPlateDirectory,
   resolveLatestTrack
 } = require("./core/conform");
-const { createSourcePreview, probePlate } = require("./core/media");
+const { buildSourcePreviewJob, probePlate } = require("./core/media");
 const {
   buildPythonEnv,
   findNukeRuntime,
@@ -332,15 +332,36 @@ handleIpc("conform:analyze", async (_event, payload) => {
 });
 
 handleIpc("preview:createSource", async (_event, payload) => {
-  const plate = payload && payload.plate;
+  const settings = sanitizeSettings(payload && payload.settings);
+  const ocio = await getOcioInfo();
+  const job = buildSourcePreviewJob({
+    ffmpegPath,
+    plate: payload && payload.plate,
+    inputColorSpace: settings.inputColorSpace,
+    ocio
+  });
 
-  if (!plate) {
-    return null;
+  if (!ocio.colorSpaces.includes(job.inputColorSpace)) {
+    throw new Error(`Colorspace '${job.inputColorSpace}' отсутствует в текущем Nuke OCIO.`);
   }
 
+  const id = sanitizeFileName(payload.id || Date.now());
+  const jobPath = path.join(jobsDir, `source-preview-${id}.json`);
   const outputPath = path.join(previewsDir, `source-${sanitizeFileName(payload.id || Date.now())}.jpg`);
-  await createSourcePreview(ffmpegPath, plate, outputPath);
-  return pathToFileURL(outputPath).href;
+  fs.writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`, "utf8");
+
+  try {
+    const runtime = getRuntime();
+    const result = await runPythonJson(
+      runtime,
+      bundledPath("vendor", "py311"),
+      bundledPath("backend", "preview_worker.py"),
+      [jobPath, outputPath, "source"]
+    );
+    return result.path ? pathToFileURL(result.path).href : null;
+  } finally {
+    safeUnlink(jobPath);
+  }
 });
 
 handleIpc("preview:createConform", async (_event, payload) => {
