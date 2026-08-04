@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS = {
   inputColorSpace: "ACES2065-1",
   durationMode: "auto",
   durationSeconds: 4,
-  resolutionMode: "source",
+  resolutionMode: "hd",
   denoiseStrength: 1,
   lastPlateDir: "",
   lastTrackDir: ""
@@ -553,6 +553,8 @@ function runConformWorker(jobPath, id, sender) {
             }
           } else if (message.type === "result") {
             result = message;
+          } else if (message.type === "metrics") {
+            logEvent("info", "worker.metrics", { id, ...message.performance });
           } else if (message.type === "error") {
             workerError = message.message;
           }
@@ -662,7 +664,7 @@ function buildAnalysisWarnings(plate, track, duration, canvas) {
     warnings.push("Plate длиннее выбранной длительности и будет обрезан.");
   }
   if (canvas.resolutionMode === "hd" && (plate.media.width !== 1920 || plate.media.height !== 1080)) {
-    warnings.push("До undistort plate будет нормализован в базу 1920×1080.");
+    warnings.push("Undistort считается в исходном разрешении; затем результат переводится в 1920×1080.");
   }
   if (canvas.resolutionMode === "source" && (plate.media.width > 1920 || plate.media.height > 1080)) {
     warnings.push("Сохранён исходный пиксельный масштаб; 4K не уменьшается до 1920×1080.");
@@ -830,7 +832,7 @@ function sanitizeSettings(settings) {
     inputColorSpace: stringValue(incoming.inputColorSpace) || "ACES2065-1",
     durationMode: incoming.durationMode === "custom" ? "custom" : "auto",
     durationSeconds: clampInteger(incoming.durationSeconds, 4, 15, 4),
-    resolutionMode: incoming.resolutionMode === "hd" ? "hd" : "source",
+    resolutionMode: incoming.resolutionMode === "source" ? "source" : "hd",
     denoiseStrength: clampNumber(incoming.denoiseStrength, 0, 2, 1),
     lastPlateDir: stringValue(incoming.lastPlateDir),
     lastTrackDir: stringValue(incoming.lastTrackDir)

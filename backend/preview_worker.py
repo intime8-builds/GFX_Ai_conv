@@ -21,17 +21,13 @@ def main() -> int:
         raise RuntimeError(f"Неизвестный режим preview: {mode}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas = job["canvas"]
-    decoder = worker.start_process(worker.decoder_command(job), stdout=subprocess.PIPE)
-    if decoder.stdout is None:
+    frames, decoder = worker.open_source_frames(job)
+    if decoder is not None and decoder.stdout is None:
         raise RuntimeError("Не удалось открыть preview decoder.")
 
-    frames = worker.raw_frames(
-        decoder.stdout,
-        int(canvas["baseWidth"]),
-        int(canvas["baseHeight"]),
-    )
     frame = next(frames, None)
-    worker.terminate(decoder)
+    if decoder is not None:
+        worker.terminate(decoder)
     if frame is None:
         raise RuntimeError("FFmpeg не прочитал preview-кадр.")
 
@@ -40,8 +36,14 @@ def main() -> int:
         track = job["track"]
         frame_number = job["plate"].get("startNumber") or track.get("firstCurveFrame") or 1
         parameters = worker.parameters_at(track, float(frame_number))
-        map_x, map_y = worker.make_remap(job, parameters)
+        render_job = {**job, "canvas": worker.processing_canvas(job)}
+        map_x, map_y = worker.make_remap(render_job, parameters)
         preview_frame = worker.remap_bilinear(frame, map_x, map_y)
+        preview_frame = worker.resize_frame(
+            preview_frame,
+            int(canvas["width"]),
+            int(canvas["height"]),
+        )
 
     rgba = worker.apply_ocio(preview_frame, worker.create_ocio_processor(job))
     payload = worker.packed_rgba_to_planar(rgba)

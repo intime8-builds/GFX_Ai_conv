@@ -7,6 +7,7 @@ performs the configured OCIO display transform, and safely publishes outputs.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import os
@@ -15,16 +16,27 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
 
 import numpy as np
 import PyOpenColorIO as ocio
 
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 
 CHILDREN: list[subprocess.Popen[Any]] = []
 CANCELLED = False
 TV_LIMIT_BYTES = 64 * 1024 * 1024
+OCIO_THREADS = max(1, min(16, os.cpu_count() or 4))
+OCIO_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=OCIO_THREADS)
+DECODE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+MAP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=min(4, OCIO_THREADS))
 
 
 def emit(kind: str, **values: Any) -> None:
@@ -190,8 +202,8 @@ def make_remap(
     radius = math.hypot(filmback_width / 2, filmback_height / 2)
     stripe_rows = 128
 
-    for row in range(0, output_height, stripe_rows):
-        end = min(output_height, row + stripe_rows)
+    def process_rows(bounds: tuple[int, int]) -> None:
+        row, end = bounds
         output_y = 1 - (
             (np.arange(row, end, dtype=np.float32)[:, None] + 0.5 + top) / base_height
         )
@@ -221,6 +233,11 @@ def make_remap(
         map_x[row:end] = (distorted_unit_x * base_width) - 0.5
         map_y[row:end] = ((1 - distorted_unit_y) * base_height) - 0.5
 
+    ranges = [
+        (row, min(output_height, row + stripe_rows))
+        for row in range(0, output_height, stripe_rows)
+    ]
+    list(MAP_EXECUTOR.map(process_rows, ranges))
     return map_x, map_y
 
 
@@ -229,6 +246,16 @@ def remap_bilinear(
     map_x: np.ndarray,
     map_y: np.ndarray,
 ) -> np.ndarray:
+    if cv2 is not None:
+        return cv2.remap(
+            frame,
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+
     source_height, source_width, _channels = frame.shape
     output = np.zeros((map_x.shape[0], map_x.shape[1], 3), dtype=np.float32)
     stripe_rows = 128
@@ -262,11 +289,55 @@ def temporal_denoise(
 ) -> np.ndarray:
     if strength <= 0:
         return current
-    neighbour_average = (previous + following) * 0.5
-    delta = neighbour_average - current
-    threshold = 0.0125 * (1 + np.abs(current))
-    confidence = np.exp(-np.square(delta / np.maximum(threshold, 1e-6)))
-    return current + ((0.22 * strength) * confidence * delta)
+
+    output = np.empty_like(current)
+    stripe_rows = 128
+    for row in range(0, current.shape[0], stripe_rows):
+        end = min(current.shape[0], row + stripe_rows)
+        current_stripe = current[row:end]
+        neighbour_average = (previous[row:end] + following[row:end]) * 0.5
+        delta = neighbour_average - current_stripe
+        threshold = 0.0125 * (1 + np.abs(current_stripe))
+        confidence = np.exp(-np.square(delta / np.maximum(threshold, 1e-6)))
+        output[row:end] = current_stripe + ((0.22 * strength) * confidence * delta)
+    return output
+
+
+def source_dimensions(job: dict[str, Any]) -> tuple[int, int]:
+    media = job["plate"].get("media") or {}
+    width = int(media.get("width") or job["canvas"]["baseWidth"])
+    height = int(media.get("height") or job["canvas"]["baseHeight"])
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Не удалось определить исходное разрешение plate.")
+    return width, height
+
+
+def processing_canvas(job: dict[str, Any]) -> dict[str, Any]:
+    canvas = job["canvas"]
+    source_width, source_height = source_dimensions(job)
+    scale_x = source_width / float(canvas["baseWidth"])
+    scale_y = source_height / float(canvas["baseHeight"])
+    return {
+        "baseWidth": source_width,
+        "baseHeight": source_height,
+        "width": max(1, int(round(float(canvas["width"]) * scale_x))),
+        "height": max(1, int(round(float(canvas["height"]) * scale_y))),
+        "left": float(canvas["left"]) * scale_x,
+        "top": float(canvas["top"]) * scale_y,
+    }
+
+
+def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    if frame.shape[1] == width and frame.shape[0] == height:
+        return frame
+    if cv2 is not None:
+        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+
+    source_height, source_width, _channels = frame.shape
+    x = (((np.arange(width, dtype=np.float32) + 0.5) * source_width) / width) - 0.5
+    y = (((np.arange(height, dtype=np.float32) + 0.5) * source_height) / height) - 0.5
+    map_x, map_y = np.meshgrid(x, y)
+    return remap_bilinear(frame, map_x, map_y)
 
 
 def create_ocio_processor(job: dict[str, Any]) -> Any:
@@ -284,20 +355,24 @@ def create_ocio_processor(job: dict[str, Any]) -> Any:
 def apply_ocio(image: np.ndarray, processor: Any) -> np.ndarray:
     rgba = np.ones((image.shape[0], image.shape[1], 4), dtype=np.float32)
     rgba[:, :, :3] = image
-    values = memoryview(rgba).cast("B").cast("f")
-    processor.applyRGBA(values)
-    values.release()
+    chunks = np.array_split(rgba, min(OCIO_THREADS, image.shape[0]), axis=0)
+    list(OCIO_EXECUTOR.map(processor.applyRGBA, chunks))
     return rgba
 
 
-def read_exact(stream: BinaryIO, size: int) -> bytes:
-    chunks = bytearray()
-    while len(chunks) < size:
-        chunk = stream.read(size - len(chunks))
-        if not chunk:
+def read_exact(stream: BinaryIO, size: int) -> bytes | bytearray:
+    payload = bytearray(size)
+    view = memoryview(payload)
+    offset = 0
+    while offset < size:
+        count = stream.readinto(view[offset:])
+        if not count:
             break
-        chunks.extend(chunk)
-    return bytes(chunks)
+        offset += count
+    view.release()
+    if offset == size:
+        return payload
+    return bytes(payload[:offset])
 
 
 def raw_frames(stream: BinaryIO, width: int, height: int) -> Iterator[np.ndarray]:
@@ -317,9 +392,53 @@ def raw_frames(stream: BinaryIO, width: int, height: int) -> Iterator[np.ndarray
         yield packed
 
 
+def exr_sequence_frames(job: dict[str, Any]) -> Iterator[np.ndarray]:
+    if cv2 is None:
+        raise RuntimeError("OpenCV недоступен для прямого чтения EXR.")
+
+    plate = job["plate"]
+    start = int(plate["startNumber"])
+    end = int(plate["endNumber"])
+    pattern = plate["inputPath"]
+    for frame_number in range(start, end + 1):
+        check_cancelled()
+        frame_path = pattern % frame_number
+        image = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise RuntimeError(f"OpenCV не прочитал EXR-кадр: {frame_path}")
+        if image.ndim == 2:
+            image = np.repeat(image[:, :, None], 3, axis=2)
+        if image.shape[2] < 3:
+            raise RuntimeError(f"В EXR-кадре меньше трёх каналов: {frame_path}")
+        if image.dtype != np.float32:
+            if np.issubdtype(image.dtype, np.integer):
+                image = image.astype(np.float32) / float(np.iinfo(image.dtype).max)
+            else:
+                image = image.astype(np.float32)
+        yield np.ascontiguousarray(image[:, :, 2::-1])
+
+
+def open_source_frames(
+    job: dict[str, Any],
+) -> tuple[Iterator[np.ndarray], subprocess.Popen[Any] | None]:
+    plate = job["plate"]
+    if (
+        plate.get("kind") == "sequence"
+        and str(plate.get("inputPath", "")).lower().endswith(".exr")
+        and cv2 is not None
+    ):
+        return exr_sequence_frames(job), None
+
+    source_width, source_height = source_dimensions(job)
+    decoder = start_process(decoder_command(job), stdout=subprocess.PIPE)
+    if decoder.stdout is None:
+        terminate(decoder)
+        raise RuntimeError("Не удалось открыть FFmpeg decoder исходного plate.")
+    return raw_frames(decoder.stdout, source_width, source_height), decoder
+
+
 def decoder_command(job: dict[str, Any]) -> list[str]:
     plate = job["plate"]
-    canvas = job["canvas"]
     command = [job["ffmpegPath"], "-hide_banner", "-loglevel", "error"]
     if plate["kind"] == "sequence":
         command.extend([
@@ -330,7 +449,6 @@ def decoder_command(job: dict[str, Any]) -> list[str]:
     command.extend([
         "-map", "0:v:0",
         "-an",
-        "-vf", f"scale={canvas['baseWidth']}:{canvas['baseHeight']}:flags=lanczos",
         "-pix_fmt", "gbrpf32le",
         "-f", "rawvideo",
         "pipe:1",
@@ -386,50 +504,80 @@ def write_encoder_frame(encoder: subprocess.Popen[Any], payload: bytes) -> None:
         raise RuntimeError(f"ProRes encoder: {detail}") from error
 
 
-def render_main(job: dict[str, Any], part_path: Path) -> None:
+def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
     canvas = job["canvas"]
-    base_width = int(canvas["baseWidth"])
-    base_height = int(canvas["baseHeight"])
+    source_width, source_height = source_dimensions(job)
+    render_canvas = processing_canvas(job)
+    render_job = {**job, "canvas": render_canvas}
+    output_width = int(canvas["width"])
+    output_height = int(canvas["height"])
     target_frames = max(1, int(round(float(job["durationSeconds"]) * float(job["fps"]))))
     processor = create_ocio_processor(job)
-    decoder = start_process(decoder_command(job), stdout=subprocess.PIPE)
+    track = job["track"]
+    static_map: tuple[np.ndarray, np.ndarray] | None = None
+    timings = {
+        "decode": 0.0,
+        "denoise": 0.0,
+        "remap": 0.0,
+        "reformat": 0.0,
+        "ocio": 0.0,
+        "encode": 0.0,
+    }
+    started = time.perf_counter()
+
+    if not track.get("animated"):
+        static_map = make_remap(render_job, parameters_at(track, 0))
+
+    frames, decoder = open_source_frames(job)
     encoder = start_process(encoder_command(job, part_path), stdin=subprocess.PIPE)
-    if decoder.stdout is None or encoder.stdin is None:
+    if encoder.stdin is None:
         raise RuntimeError("Не удалось открыть каналы FFmpeg.")
 
-    frames = raw_frames(decoder.stdout, base_width, base_height)
+    stage_started = time.perf_counter()
     current = next(frames, None)
     following = next(frames, None)
+    timings["decode"] += time.perf_counter() - stage_started
     previous = current
     last_encoded: bytes | None = None
     encoded_count = 0
-    static_map: tuple[np.ndarray, np.ndarray] | None = None
-    track = job["track"]
-
-    if not track.get("animated"):
-        static_map = make_remap(job, parameters_at(track, 0))
+    processed_count = 0
+    pending_frame: concurrent.futures.Future[np.ndarray | None] | None = None
 
     try:
         while current is not None and encoded_count < target_frames:
             check_cancelled()
+            if following is not None and (encoded_count + 1) < target_frames:
+                pending_frame = DECODE_EXECUTOR.submit(next, frames, None)
             next_frame = following if following is not None else current
+            stage_started = time.perf_counter()
             denoised = temporal_denoise(
                 previous if previous is not None else current,
                 current,
                 next_frame,
                 float(job.get("denoiseStrength", 1)),
             )
+            timings["denoise"] += time.perf_counter() - stage_started
             track_start = job["plate"].get("startNumber")
             if track_start is None:
                 track_start = track.get("firstCurveFrame") or 1
             frame_number = float(track_start) + encoded_count
-            remap = static_map or make_remap(job, parameters_at(track, frame_number))
+            remap = static_map or make_remap(render_job, parameters_at(track, frame_number))
+            stage_started = time.perf_counter()
             undistorted = remap_bilinear(denoised, remap[0], remap[1])
-            transformed = apply_ocio(undistorted, processor)
+            timings["remap"] += time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            reformatted = resize_frame(undistorted, output_width, output_height)
+            timings["reformat"] += time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            transformed = apply_ocio(reformatted, processor)
+            timings["ocio"] += time.perf_counter() - stage_started
             payload = packed_rgba_to_planar(transformed)
+            stage_started = time.perf_counter()
             write_encoder_frame(encoder, payload)
+            timings["encode"] += time.perf_counter() - stage_started
             last_encoded = payload
             encoded_count += 1
+            processed_count += 1
             emit(
                 "progress",
                 phase="conform",
@@ -439,14 +587,22 @@ def render_main(job: dict[str, Any], part_path: Path) -> None:
             )
             previous = current
             current = following
-            following = next(frames, None) if current is not None else None
+            if current is not None and pending_frame is not None:
+                stage_started = time.perf_counter()
+                following = pending_frame.result()
+                timings["decode"] += time.perf_counter() - stage_started
+                pending_frame = None
+            else:
+                following = None
 
         if last_encoded is None:
             raise RuntimeError("FFmpeg не прочитал ни одного кадра plate.")
 
         while encoded_count < target_frames:
             check_cancelled()
+            stage_started = time.perf_counter()
             write_encoder_frame(encoder, last_encoded)
+            timings["encode"] += time.perf_counter() - stage_started
             encoded_count += 1
             emit(
                 "progress",
@@ -456,11 +612,13 @@ def render_main(job: dict[str, Any], part_path: Path) -> None:
                 totalFrames=target_frames,
             )
     finally:
+        if pending_frame is not None:
+            pending_frame.cancel()
         try:
             encoder.stdin.close()
         except Exception:
             pass
-        if decoder.poll() is None:
+        if decoder is not None and decoder.poll() is None:
             terminate(decoder)
 
     encoder_stderr = encoder.stderr.read().decode("utf8", "replace") if encoder.stderr else ""
@@ -470,6 +628,21 @@ def render_main(job: dict[str, Any], part_path: Path) -> None:
         raise RuntimeError(f"ProRes encoder: {brief_error(encoder_stderr)}")
     if not part_path.is_file() or part_path.stat().st_size == 0:
         raise RuntimeError("FFmpeg не создал ProRes-файл.")
+
+
+    elapsed = time.perf_counter() - started
+    return {
+        "backend": f"OpenCV {cv2.__version__}" if cv2 is not None else "NumPy fallback",
+        "pipeline": "source denoise -> source undistort -> output reformat -> OCIO -> ProRes",
+        "sourceResolution": f"{source_width}x{source_height}",
+        "undistortResolution": f"{render_canvas['width']}x{render_canvas['height']}",
+        "outputResolution": f"{output_width}x{output_height}",
+        "processedFrames": processed_count,
+        "paddedFrames": target_frames - processed_count,
+        "elapsedSeconds": round(elapsed, 3),
+        "processedFps": round(processed_count / elapsed, 3) if elapsed > 0 else None,
+        "stageSeconds": {name: round(value, 3) for name, value in timings.items()},
+    }
 
 
 def run_command(command: list[str]) -> str:
@@ -578,7 +751,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
     emit("progress", phase="preparing", progress=2)
 
     try:
-        render_main(job, main_part)
+        performance = render_main(job, main_part)
+        emit("metrics", performance=performance)
         os.replace(main_part, main_path)
         created.remove(main_part)
         with tempfile.TemporaryDirectory(prefix="gfx-ai-conform-") as temp:
@@ -597,6 +771,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             "durationSeconds": job["durationSeconds"],
             "canvas": job["canvas"],
             "denoiseStrength": job.get("denoiseStrength", 1),
+            "performance": performance,
             "main": media_info(job["ffmpegPath"], main_path),
             "topview": media_info(job["ffmpegPath"], topview_path),
         }
@@ -654,7 +829,36 @@ def self_test() -> int:
         raise RuntimeError("Identity X remap failed.")
     if not np.allclose(map_y, expected_y, atol=1e-4):
         raise RuntimeError("Identity Y remap failed.")
-    sys.stdout.write(json.dumps({"ok": True, "numpy": np.__version__, "ocio": ocio.__version__}))
+    pipeline_job = {
+        "plate": {"media": {"width": 64, "height": 36}},
+        "canvas": {
+            "baseWidth": 32,
+            "baseHeight": 18,
+            "width": 34,
+            "height": 20,
+            "left": -1,
+            "top": -1,
+        },
+    }
+    if processing_canvas(pipeline_job) != {
+        "baseWidth": 64,
+        "baseHeight": 36,
+        "width": 68,
+        "height": 40,
+        "left": -2.0,
+        "top": -2.0,
+    }:
+        raise RuntimeError("Source-resolution processing canvas failed.")
+    sample = np.linspace(0, 1, 12 * 8 * 3, dtype=np.float32).reshape((8, 12, 3))
+    expected_denoise = temporal_denoise(sample * 0.9, sample, sample * 1.1, 1)
+    if not np.allclose(expected_denoise, sample, atol=1e-6):
+        raise RuntimeError("Temporal denoise stripe processing failed.")
+    sys.stdout.write(json.dumps({
+        "ok": True,
+        "numpy": np.__version__,
+        "ocio": ocio.__version__,
+        "opencv": cv2.__version__ if cv2 is not None else None,
+    }))
     return 0
 
 
