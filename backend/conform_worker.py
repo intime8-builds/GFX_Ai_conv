@@ -403,7 +403,13 @@ def exr_sequence_frames(job: dict[str, Any]) -> Iterator[np.ndarray]:
     for frame_number in range(start, end + 1):
         check_cancelled()
         frame_path = pattern % frame_number
-        image = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+        if os.name == "nt":
+            # cv2.imread still uses a narrow path on Windows. Reading the
+            # compressed payload first keeps Cyrillic and other Unicode paths intact.
+            encoded = np.fromfile(frame_path, dtype=np.uint8)
+            image = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED) if encoded.size else None
+        else:
+            image = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
         if image is None:
             raise RuntimeError(f"OpenCV не прочитал EXR-кадр: {frame_path}")
         if image.ndim == 2:

@@ -1,6 +1,6 @@
 {
   "name": "gfx_ai_conv",
-  "version": "0.2.0-alpha.4",
+  "version": "0.2.0-alpha.5",
   "description": "Локальная подготовка AI-конформа: denoise, 3DE undistort, Rec.709 ProRes 4444 и Topview.",
   "main": "src/main.js",
   "author": "intime8",
