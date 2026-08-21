@@ -25,9 +25,11 @@ def main() -> int:
     if decoder is not None and decoder.stdout is None:
         raise RuntimeError("Не удалось открыть preview decoder.")
 
-    frame = next(frames, None)
-    if decoder is not None:
-        worker.terminate(decoder)
+    try:
+        frame = next(frames, None)
+    finally:
+        if decoder is not None:
+            worker.terminate(decoder)
     if frame is None:
         raise RuntimeError("FFmpeg не прочитал preview-кадр.")
 
@@ -63,9 +65,14 @@ def main() -> int:
         str(output_path),
     ]
     process = worker.start_process(command, stdin=subprocess.PIPE)
-    _stdout, stderr = process.communicate(input=payload)
-    code = process.returncode
-    worker.finish_process(process)
+    try:
+        _stdout, stderr = process.communicate(input=payload)
+        code = process.returncode
+    finally:
+        if process.poll() is None:
+            worker.terminate(process)
+        else:
+            worker.finish_process(process)
     if code != 0:
         raise RuntimeError(worker.brief_error(stderr.decode("utf8", "replace")))
     sys.stdout.write(json.dumps({"path": str(output_path)}, ensure_ascii=False))
@@ -78,3 +85,6 @@ if __name__ == "__main__":
     except Exception as error:
         sys.stderr.write(str(error))
         raise SystemExit(1)
+    finally:
+        for child in tuple(worker.CHILDREN):
+            worker.terminate(child)

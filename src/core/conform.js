@@ -111,7 +111,7 @@ function describeTrackFile(filePath, directoryVersion = null) {
   return {
     ...parsed,
     version: fileVersion === null ? directoryVersion : fileVersion,
-    cameraDir: path.dirname(path.dirname(filePath)),
+    cameraDir: findCameraDirectory(path.dirname(filePath)),
     shotName: shotNameFromTrack(filePath)
   };
 }

@@ -8,6 +8,7 @@ performs the configured OCIO display transform, and safely publishes outputs.
 from __future__ import annotations
 
 import concurrent.futures
+import itertools
 import json
 import math
 import os
@@ -32,6 +33,7 @@ except ImportError:
 
 CHILDREN: list[subprocess.Popen[Any]] = []
 CANCELLED = False
+CANCEL_PATH: Path | None = None
 TV_LIMIT_BYTES = 64 * 1024 * 1024
 OCIO_THREADS = max(1, min(16, os.cpu_count() or 4))
 OCIO_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=OCIO_THREADS)
@@ -58,7 +60,13 @@ def request_cancel(_signum: int, _frame: Any) -> None:
 
 
 def check_cancelled() -> None:
-    if CANCELLED:
+    cancel_file_exists = False
+    if CANCEL_PATH is not None:
+        try:
+            cancel_file_exists = CANCEL_PATH.exists()
+        except OSError:
+            pass
+    if CANCELLED or cancel_file_exists:
         raise RuntimeError("Конвертация остановлена.")
 
 
@@ -433,7 +441,12 @@ def open_source_frames(
         and str(plate.get("inputPath", "")).lower().endswith(".exr")
         and cv2 is not None
     ):
-        return exr_sequence_frames(job), None
+        direct_frames = exr_sequence_frames(job)
+        try:
+            first_frame = next(direct_frames)
+            return itertools.chain((first_frame,), direct_frames), None
+        except Exception as error:
+            sys.stderr.write(f"OpenCV EXR fallback to FFmpeg: {error}\n")
 
     source_width, source_height = source_dimensions(job)
     decoder = start_process(decoder_command(job), stdout=subprocess.PIPE)
@@ -534,12 +547,20 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
     if not track.get("animated"):
         static_map = make_remap(render_job, parameters_at(track, 0))
 
+    stage_started = time.perf_counter()
     frames, decoder = open_source_frames(job)
-    encoder = start_process(encoder_command(job, part_path), stdin=subprocess.PIPE)
+    try:
+        encoder = start_process(encoder_command(job, part_path), stdin=subprocess.PIPE)
+    except Exception:
+        if decoder is not None:
+            terminate(decoder)
+        raise
     if encoder.stdin is None:
+        terminate(encoder)
+        if decoder is not None:
+            terminate(decoder)
         raise RuntimeError("Не удалось открыть каналы FFmpeg.")
 
-    stage_started = time.perf_counter()
     current = next(frames, None)
     following = next(frames, None)
     timings["decode"] += time.perf_counter() - stage_started
@@ -548,6 +569,7 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
     encoded_count = 0
     processed_count = 0
     pending_frame: concurrent.futures.Future[np.ndarray | None] | None = None
+    processing_complete = False
 
     try:
         while current is not None and encoded_count < target_frames:
@@ -601,6 +623,14 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
             else:
                 following = None
 
+        if current is None and decoder is not None:
+            decoder_stderr = decoder.stderr.read().decode("utf8", "replace") if decoder.stderr else ""
+            decoder_code = decoder.wait()
+            finish_process(decoder)
+            decoder = None
+            if decoder_code != 0:
+                raise RuntimeError(f"FFmpeg decoder: {brief_error(decoder_stderr)}")
+
         if last_encoded is None:
             raise RuntimeError("FFmpeg не прочитал ни одного кадра plate.")
 
@@ -617,6 +647,7 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
                 frame=encoded_count,
                 totalFrames=target_frames,
             )
+        processing_complete = True
     finally:
         if pending_frame is not None:
             pending_frame.cancel()
@@ -626,6 +657,8 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
             pass
         if decoder is not None and decoder.poll() is None:
             terminate(decoder)
+        if not processing_complete:
+            terminate(encoder)
 
     encoder_stderr = encoder.stderr.read().decode("utf8", "replace") if encoder.stderr else ""
     encoder_code = encoder.wait()
@@ -634,7 +667,6 @@ def render_main(job: dict[str, Any], part_path: Path) -> dict[str, Any]:
         raise RuntimeError(f"ProRes encoder: {brief_error(encoder_stderr)}")
     if not part_path.is_file() or part_path.stat().st_size == 0:
         raise RuntimeError("FFmpeg не создал ProRes-файл.")
-
 
     elapsed = time.perf_counter() - started
     return {
@@ -753,19 +785,22 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
     main_path, topview_path, report_path = unique_outputs(output_dir, job["shotName"])
     main_part = main_path.with_suffix(".part.mov")
     topview_part = topview_path.with_suffix(".part.mp4")
-    created = [main_part, topview_part]
+    report_part = report_path.with_suffix(".part.json")
+    partials = [main_part, topview_part, report_part]
+    published: list[Path] = []
+    publish_complete = False
     emit("progress", phase="preparing", progress=2)
 
     try:
         performance = render_main(job, main_part)
         emit("metrics", performance=performance)
-        os.replace(main_part, main_path)
-        created.remove(main_part)
         with tempfile.TemporaryDirectory(prefix="gfx-ai-conform-") as temp:
-            render_topview(job, main_path, topview_part, Path(temp))
-        os.replace(topview_part, topview_path)
-        created.remove(topview_part)
+            render_topview(job, main_part, topview_part, Path(temp))
         emit("progress", phase="qc", progress=98)
+        main_info = media_info(job["ffmpegPath"], main_part)
+        main_info["path"] = str(main_path)
+        topview_info = media_info(job["ffmpegPath"], topview_part)
+        topview_info["path"] = str(topview_path)
         report = {
             "ok": True,
             "sourcePlate": job["plate"]["selectedPath"],
@@ -778,10 +813,22 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             "canvas": job["canvas"],
             "denoiseStrength": job.get("denoiseStrength", 1),
             "performance": performance,
-            "main": media_info(job["ffmpegPath"], main_path),
-            "topview": media_info(job["ffmpegPath"], topview_path),
+            "main": main_info,
+            "topview": topview_info,
         }
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
+        report_part.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
+
+        for partial, final in (
+            (main_part, main_path),
+            (topview_part, topview_path),
+            (report_part, report_path),
+        ):
+            if final.exists():
+                raise RuntimeError(f"Выходной файл уже существует: {final}")
+            os.rename(partial, final)
+            partials.remove(partial)
+            published.append(final)
+        publish_complete = True
         emit("progress", phase="done", progress=100)
         return {
             "mainPath": str(main_path),
@@ -790,11 +837,17 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             "report": report,
         }
     except Exception:
-        for partial in created:
+        for partial in partials:
             try:
                 partial.unlink(missing_ok=True)
             except OSError:
                 pass
+        if not publish_complete:
+            for final in published:
+                try:
+                    final.unlink(missing_ok=True)
+                except OSError:
+                    pass
         raise
 
 
@@ -869,6 +922,7 @@ def self_test() -> int:
 
 
 def main() -> int:
+    global CANCEL_PATH
     signal.signal(signal.SIGTERM, request_cancel)
     signal.signal(signal.SIGINT, request_cancel)
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
@@ -877,6 +931,7 @@ def main() -> int:
         return fail("usage: conform_worker.py JOB.json")
     try:
         job = json.loads(Path(sys.argv[1]).read_text(encoding="utf8"))
+        CANCEL_PATH = Path(job["cancelPath"]) if job.get("cancelPath") else None
         result = run_job(job)
         emit("result", **result)
         return 0

@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self'; script-src 'self'; connect-src https://api.github.com https://github.com">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self'; script-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GFX Ai Conv</title>
     <link rel="stylesheet" href="./styles.css">
@@ -149,9 +149,7 @@
           <h2 id="updateTitle">Доступно обновление</h2>
           <p id="updateBody"></p>
           <div class="modal-progress hidden" id="updateProgressWrap">
-            <div class="progress-track">
-              <div class="progress-fill" id="updateProgressFill"></div>
-            </div>
+            <progress class="progress-track" id="updateProgressFill" max="100" value="0"></progress>
             <span id="updateProgressText">0%</span>
           </div>
           <div class="modal-actions">
@@ -182,11 +180,11 @@
             <h3>8. Очередь</h3>
             <p>После успешного анализа нажмите «Добавить в очередь». Старт запускает ожидающие задания. Пауза завершает текущий shot и не начинает следующий. Стоп останавливает текущую обработку. «Повторить» создаёт копию задания с теми же зафиксированными параметрами.</p>
             <h3>9. Безопасность исходников</h3>
-            <p>Plate и .nk открываются только для чтения. Результаты сначала пишутся во временные .part-файлы и публикуются только после успешного завершения. Существующие результаты не перезаписываются: добавляется числовой суффикс.</p>
+            <p>Plate и .nk открываются только для чтения. MOV, Topview и QC сначала пишутся во временные .part-файлы и публикуются только полным проверенным комплектом. При ошибке или остановке частичные результаты удаляются. Существующие результаты не перезаписываются: добавляется числовой суффикс.</p>
             <h3>10. OCIO и Nuke</h3>
             <p>Приложение не запускает интерфейс Nuke и не использует Nuke license для undistort. EXR читается напрямую через OpenEXR/OpenCV, нативный remap применяется в исходном разрешении, а OCIO обрабатывается параллельно. Из Nuke берутся Python, PyOpenColorIO и ACES config. Для остальных входных форматов используется FFmpeg fallback.</p>
             <h3>11. Обновления</h3>
-            <p>Проверка, скачивание и запуск установщика выполняются в окне приложения. После тихой установки программа перезапускается. Для доступа к GitHub Releases сеть должна разрешать api.github.com и github.com.</p>
+            <p>Проверка, скачивание и запуск установщика выполняются в окне приложения. Перед запуском сверяются репозиторий, версия, размер и SHA-256 установщика. После тихой установки программа перезапускается. Для доступа к GitHub Releases сеть должна разрешать api.github.com и github.com.</p>
             <h3>12. Диагностические логи</h3>
             <p>Приложение постоянно записывает события интерфейса, параметры заданий, этапы обработки и вывод backend в локальные журналы. Кнопка «Собрать логи» создаёт ZIP с журналами, настройками очереди и сведениями о системе, затем показывает архив в Проводнике. Исходные изображения, видео и .nk в архив не копируются.</p>
           </div>

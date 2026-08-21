@@ -54,7 +54,13 @@ window.addEventListener("unhandledrejection", (event) => {
   reportLog("error", "unhandledRejection", event.reason);
 });
 
-init();
+init().catch((error) => {
+  reportLog("fatal", "initFailed", error);
+  elements.runtimeStatus.textContent = "Ошибка запуска";
+  elements.runtimeStatus.className = "runtime-status error";
+  elements.setupStatus.textContent = error.message || "Интерфейс не удалось инициализировать.";
+  showToast(error.message || "Интерфейс не удалось инициализировать.");
+});
 
 async function init() {
   reportLog("info", "initStart");
@@ -73,7 +79,9 @@ async function init() {
       return;
     }
 
-    job.progress = Number.isFinite(update.progress) ? update.progress : job.progress;
+    job.progress = Number.isFinite(update.progress)
+      ? Math.min(100, Math.max(0, update.progress))
+      : job.progress;
     job.phase = update.phase || job.phase;
     renderJobs();
   });
@@ -81,13 +89,13 @@ async function init() {
   window.gfxConv.onUpdateDownloadProgress((update) => {
     if (update.phase === "installing") {
       elements.updateBody.textContent = "Устанавливаю обновление. Приложение перезапустится автоматически.";
-      elements.updateProgressFill.style.width = "100%";
+      elements.updateProgressFill.value = 100;
       elements.updateProgressText.textContent = "Установка";
       return;
     }
 
-    const progress = update.progress || 0;
-    elements.updateProgressFill.style.width = `${progress}%`;
+    const progress = Math.min(100, Math.max(0, Number(update.progress) || 0));
+    elements.updateProgressFill.value = progress;
     elements.updateProgressText.textContent = `${progress}%`;
   });
   reportLog("info", "initComplete");
@@ -479,8 +487,15 @@ async function stopQueue() {
   state.stopping = true;
   state.paused = false;
 
-  if (state.activeId) {
-    await window.gfxConv.cancelConform();
+  try {
+    if (state.activeId) {
+      await window.gfxConv.cancelConform();
+    }
+  } catch (error) {
+    state.stopping = false;
+    showToast(error.message || "Не удалось остановить backend.");
+    renderJobs();
+    return;
   }
 
   state.jobs.filter(isRunnable).forEach((job) => {
@@ -490,9 +505,16 @@ async function stopQueue() {
 }
 
 async function clearQueue() {
-  if (state.activeId) {
-    state.stopping = true;
-    await window.gfxConv.cancelConform();
+  try {
+    if (state.activeId) {
+      state.stopping = true;
+      await window.gfxConv.cancelConform();
+    }
+  } catch (error) {
+    state.stopping = false;
+    showToast(error.message || "Не удалось остановить backend.");
+    renderJobs();
+    return;
   }
 
   state.jobs = [];
@@ -513,7 +535,7 @@ function openCurrentOutput() {
     return;
   }
 
-  window.gfxConv.openPath(outputDir);
+  openPath(outputDir);
 }
 
 function renderAll() {
@@ -580,7 +602,9 @@ function renderJobs() {
   }
 
   elements.jobList.innerHTML = state.jobs.map((job) => {
-    const progress = Number.isFinite(job.progress) ? job.progress : 0;
+    const progress = Number.isFinite(job.progress)
+      ? Math.min(100, Math.max(0, job.progress))
+      : 0;
     const detail = job.error || job.mainPath || PHASE_LABELS[job.phase] || job.analysis.outputDir;
     const preview = job.conformPreviewUrl || job.sourcePreviewUrl;
     const statusLabel = STATUS_LABELS[job.status] || job.status;
@@ -596,7 +620,7 @@ function renderJobs() {
           <div class="job-spec">${escapeHtml(job.settings.inputColorSpace)} · ${formatFps(job.analysis.fps)} fps · ${job.analysis.duration.targetSeconds} сек · ${job.analysis.canvas.width}×${job.analysis.canvas.height}</div>
           <div class="job-detail" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div>
           <div class="progress-row">
-            <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
+            <progress class="progress-track" max="100" value="${progress}"></progress>
             <span>${progress}%</span>
           </div>
         </div>
@@ -611,10 +635,10 @@ function renderJobs() {
   }).join("");
 
   elements.jobList.querySelectorAll("[data-open]").forEach((button) => {
-    button.addEventListener("click", () => window.gfxConv.openPath(button.dataset.open));
+    button.addEventListener("click", () => openPath(button.dataset.open));
   });
   elements.jobList.querySelectorAll("[data-output]").forEach((button) => {
-    button.addEventListener("click", () => window.gfxConv.openPath(button.dataset.output));
+    button.addEventListener("click", () => openPath(button.dataset.output));
   });
   elements.jobList.querySelectorAll("[data-repeat]").forEach((button) => {
     button.addEventListener("click", () => repeatJob(button.dataset.repeat));
@@ -707,12 +731,19 @@ async function checkUpdates(showNoUpdate) {
       elements.updateTitle.textContent = `Доступна версия ${result.releaseName || result.latestVersion}`;
       elements.updateBody.textContent = `Текущая версия: ${result.currentVersion}. Установщик будет скачан и запущен без перехода на GitHub.`;
       elements.updateProgressWrap.classList.add("hidden");
+      elements.updateProgressFill.value = 0;
+      elements.updateProgressText.textContent = "0%";
       elements.downloadUpdateButton.disabled = false;
       elements.closeUpdateButton.disabled = false;
       showModal(elements.updateModal);
     } else if (showNoUpdate) {
       showToast("Установлена последняя версия.");
     }
+  } catch (error) {
+    if (showNoUpdate) {
+      showToast(error.message || "Не удалось проверить обновления.");
+    }
+    reportLog("error", "updateCheckFailed", error);
   } finally {
     elements.updateButton.disabled = false;
   }
@@ -762,6 +793,14 @@ function showToast(message) {
   elements.toast.classList.remove("hidden");
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => elements.toast.classList.add("hidden"), 5000);
+}
+
+async function openPath(targetPath) {
+  try {
+    await window.gfxConv.openPath(targetPath);
+  } catch (error) {
+    showToast(error.message || "Не удалось открыть путь.");
+  }
 }
 
 function reportLog(level, event, details = null) {

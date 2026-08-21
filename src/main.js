@@ -2,10 +2,12 @@
 
 const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, net, shell } = require("electron");
 const { spawn } = require("child_process");
+const { createHash } = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Readable } = require("stream");
+const { pipeline } = require("stream/promises");
 const { pathToFileURL } = require("url");
 const ffmpegStaticPath = require("ffmpeg-static");
 const {
@@ -22,9 +24,17 @@ const {
   runPythonJson
 } = require("./core/runtime");
 const { createLogger, summarizeValue } = require("./core/logger");
+const {
+  isNewerVersion,
+  normalizeVersion,
+  validateInstallerAsset,
+  verifyInstallerDownload
+} = require("./core/update");
 
 const REPO_OWNER = "intime8-builds";
 const REPO_NAME = "GFX_Ai_conv";
+const UPDATE_CHECK_TIMEOUT_MS = 20_000;
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD4SURBVFhH7ZSxEYJQFATpwrbogw5sQKvAwBJISYwowIyMkMAavgwc3hcOxuS+ge7MJnrOPnU0+zNzKE4hpcgSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNXKKLFEjp8gSNdq3DJc+LGjDUW7XIkvUaNNzEzok30lyQPTO+ybk0XN53SQ44Nqi/vm7VSJL1EiZ14+pf6+mx14HTXR1uXqNElmiRsqvH7D1FcyH+Q8oqnAbUwPzpzCY8IDoaxAkOWBU/RcsfpZ7IkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyRI2cIkvUyCmyP0+WPQGxDZvikCMZ/QAAAABJRU5ErkJggg==";
 const appDataRoot = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
 const stableUserDataPath = process.env.GFX_AI_CONV_USER_DATA
@@ -56,6 +66,10 @@ app.commandLine.appendSwitch("disable-gpu-program-cache");
 for (const directory of [logDir, previewsDir, updatesDir, jobsDir]) {
   fs.mkdirSync(directory, { recursive: true });
 }
+
+pruneFiles(previewsDir, (name) => /\.jpe?g$/i.test(name), 0);
+pruneFiles(logDir, (name) => /^worker-.*\.log$/i.test(name), 100);
+pruneFiles(updatesDir, (name) => /\.tmp(?:-|$)/i.test(name), 0);
 
 const logger = createLogger({ logDir });
 const logEvent = (level, event, details = null) => logger.log(level, event, details);
@@ -91,6 +105,8 @@ let isQuitting = false;
 let activeWorker = null;
 let runtimeCache = null;
 let ocioCache = null;
+let quitCleanupStarted = false;
+let quitCleanupComplete = false;
 
 if (!gotSingleInstanceLock) {
   logEvent("warn", "app.singleInstanceRejected");
@@ -120,7 +136,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   });
 
@@ -137,6 +153,18 @@ function createWindow() {
   });
   win.webContents.on("render-process-gone", (_event, details) => {
     logEvent("fatal", "renderer.processGone", details);
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    logEvent("warn", "renderer.windowOpenBlocked", { url });
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    event.preventDefault();
+    logEvent("warn", "renderer.navigationBlocked", { url });
+  });
+  win.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    logEvent("warn", "renderer.permissionBlocked", { permission });
+    callback(false);
   });
   win.on("unresponsive", () => {
     logEvent("error", "window.unresponsive");
@@ -189,9 +217,26 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   logEvent("info", "app.beforeQuit", { activeWorker: Boolean(activeWorker) });
   isQuitting = true;
+
+  if (!activeWorker || quitCleanupComplete) {
+    return;
+  }
+
+  event.preventDefault();
+  if (quitCleanupStarted) {
+    return;
+  }
+
+  quitCleanupStarted = true;
+  cancelActiveWorker()
+    .catch((error) => logEvent("error", "worker.quitCleanupFailed", error))
+    .finally(() => {
+      quitCleanupComplete = true;
+      app.quit();
+    });
 });
 
 app.on("window-all-closed", () => {
@@ -358,6 +403,7 @@ handleIpc("preview:createSource", async (_event, payload) => {
       bundledPath("backend", "preview_worker.py"),
       [jobPath, outputPath, "source"]
     );
+    pruneFiles(previewsDir, (name) => /\.jpe?g$/i.test(name), 200);
     return result.path ? pathToFileURL(result.path).href : null;
   } finally {
     safeUnlink(jobPath);
@@ -379,6 +425,7 @@ handleIpc("preview:createConform", async (_event, payload) => {
       bundledPath("backend", "preview_worker.py"),
       [jobPath, previewPath]
     );
+    pruneFiles(previewsDir, (name) => /\.jpe?g$/i.test(name), 200);
     return result.path ? pathToFileURL(result.path).href : null;
   } finally {
     safeUnlink(jobPath);
@@ -393,35 +440,40 @@ handleIpc("conform:run", async (event, payload) => {
   const job = await buildWorkerJob(payload);
   const id = String(payload.id || Date.now());
   const jobPath = path.join(jobsDir, `job-${sanitizeFileName(id)}.json`);
+  const cancelPath = path.join(jobsDir, `cancel-${sanitizeFileName(id)}.flag`);
+  job.cancelPath = cancelPath;
+  safeUnlink(cancelPath);
   fs.writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`, "utf8");
 
   try {
-    return await runConformWorker(jobPath, id, event.sender);
+    return await runConformWorker(jobPath, id, event.sender, cancelPath);
   } finally {
     safeUnlink(jobPath);
+    safeUnlink(cancelPath);
   }
 });
 
 handleIpc("conform:cancel", async () => {
-  if (!activeWorker) {
-    return { ok: true };
-  }
-
-  const worker = activeWorker;
-  worker.cancelled = true;
-  worker.child.kill("SIGTERM");
-  setTimeout(() => {
-    if (worker.child.exitCode === null) {
-      worker.child.kill();
-    }
-  }, 2500);
+  await cancelActiveWorker();
   return { ok: true };
 });
 
 handleIpc("shell:openPath", async (_event, targetPath) => {
-  if (targetPath) {
-    await shell.openPath(targetPath);
+  const requestedPath = stringValue(targetPath);
+  if (!requestedPath || requestedPath.includes("\0")) {
+    throw new Error("Некорректный путь для открытия.");
   }
+
+  const resolvedPath = path.resolve(requestedPath);
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Путь не существует: ${resolvedPath}`);
+  }
+
+  const error = await shell.openPath(resolvedPath);
+  if (error) {
+    throw new Error(error);
+  }
+  return { ok: true, path: resolvedPath };
 });
 
 handleIpc("app:getVersion", () => app.getVersion());
@@ -441,6 +493,10 @@ handleIpc("logs:collect", async (_event, payload) => {
 });
 handleIpc("updates:check", checkForUpdates);
 handleIpc("updates:downloadAndInstall", async (event) => {
+  if (activeWorker) {
+    throw new Error("Сначала остановите текущую конвертацию.");
+  }
+
   const result = await checkForUpdates();
 
   if (!result.ok) {
@@ -452,7 +508,7 @@ handleIpc("updates:downloadAndInstall", async (event) => {
   }
 
   const installerPath = await downloadUpdateInstaller(result.installerAsset, event.sender);
-  event.sender.send("updates:downloadProgress", { progress: 100, phase: "installing" });
+  sendToRenderer(event.sender, "updates:downloadProgress", { progress: 100, phase: "installing" });
   launchSilentInstallerAfterQuit(installerPath);
   isQuitting = true;
   app.quit();
@@ -494,7 +550,7 @@ async function buildWorkerJob(payload) {
   };
 }
 
-function runConformWorker(jobPath, id, sender) {
+function runConformWorker(jobPath, id, sender, cancelPath) {
   return new Promise((resolve, reject) => {
     const runtime = getRuntime();
     const workerLogPath = path.join(
@@ -516,7 +572,23 @@ function runConformWorker(jobPath, id, sender) {
       env: buildPythonEnv(runtime, bundledPath("vendor", "py311")),
       windowsHide: true
     });
-    const workerState = { child, cancelled: false };
+    let resolveClosed;
+    const closed = new Promise((closedResolve) => {
+      resolveClosed = closedResolve;
+    });
+    const workerState = {
+      child,
+      cancelPath,
+      cancelled: false,
+      closed,
+      closedSettled: false
+    };
+    const markClosed = () => {
+      if (!workerState.closedSettled) {
+        workerState.closedSettled = true;
+        resolveClosed();
+      }
+    };
     activeWorker = workerState;
     logEvent("info", "worker.start", {
       id,
@@ -546,7 +618,7 @@ function runConformWorker(jobPath, id, sender) {
           const message = JSON.parse(line);
 
           if (message.type === "progress") {
-            sender.send("conform:progress", { id, ...message });
+            sendToRenderer(sender, "conform:progress", { id, ...message });
             if (message.phase !== lastPhase) {
               lastPhase = message.phase;
               logEvent("info", "worker.phase", { id, phase: message.phase, progress: message.progress });
@@ -573,12 +645,15 @@ function runConformWorker(jobPath, id, sender) {
       if (activeWorker === workerState) {
         activeWorker = null;
       }
+      markClosed();
       reject(error);
     });
     child.on("close", (code) => {
       if (activeWorker === workerState) {
         activeWorker = null;
       }
+      markClosed();
+      pruneFiles(logDir, (name) => /^worker-.*\.log$/i.test(name), 100);
       logEvent(code === 0 ? "info" : "error", "worker.close", {
         id,
         code,
@@ -606,6 +681,61 @@ function runConformWorker(jobPath, id, sender) {
         reportPath: result.reportPath
       });
     });
+  });
+}
+
+async function cancelActiveWorker() {
+  const worker = activeWorker;
+  if (!worker) {
+    return;
+  }
+
+  worker.cancelled = true;
+  logEvent("info", "worker.cancelRequested", { pid: worker.child.pid });
+  try {
+    fs.writeFileSync(worker.cancelPath, `${Date.now()}\n`, "utf8");
+  } catch (error) {
+    logEvent("warn", "worker.cancelFlagFailed", error);
+  }
+
+  if (await waitForPromise(worker.closed, 3500)) {
+    return;
+  }
+
+  logEvent("warn", "worker.cancelForce", { pid: worker.child.pid });
+  await forceTerminateProcessTree(worker.child);
+  if (!await waitForPromise(worker.closed, 5000)) {
+    throw new Error("Backend не завершился после принудительной остановки.");
+  }
+}
+
+function waitForPromise(promise, timeoutMs) {
+  let timer = null;
+  return Promise.race([
+    promise.then(() => true),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+function forceTerminateProcessTree(child) {
+  if (!child || child.exitCode !== null) {
+    return Promise.resolve();
+  }
+
+  if (process.platform !== "win32" || !child.pid) {
+    child.kill("SIGKILL");
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    killer.once("error", resolve);
+    killer.once("close", resolve);
   });
 }
 
@@ -675,13 +805,16 @@ function buildAnalysisWarnings(plate, track, duration, canvas) {
 
 async function checkForUpdates() {
   const currentVersion = app.getVersion();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
 
   try {
     const response = await net.fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`, {
       headers: {
         "Accept": "application/vnd.github+json",
         "User-Agent": `${REPO_NAME}/${currentVersion}`
-      }
+      },
+      signal: controller.signal
     });
 
     if (response.status === 404) {
@@ -693,64 +826,99 @@ async function checkForUpdates() {
 
     const release = await response.json();
     const latestVersion = normalizeVersion(release.tag_name || release.name || "");
-    const installerAsset = Array.isArray(release.assets)
+    if (!latestVersion) {
+      throw new Error("GitHub Release содержит некорректную версию.");
+    }
+
+    const hasUpdate = isNewerVersion(latestVersion, currentVersion);
+    const rawInstallerAsset = Array.isArray(release.assets)
       ? release.assets.find((asset) => /installer-x64\.exe$/i.test(asset.name || ""))
+      : null;
+    const installerAsset = hasUpdate
+      ? validateInstallerAsset(
+          rawInstallerAsset,
+          { owner: REPO_OWNER, name: REPO_NAME },
+          latestVersion
+        )
       : null;
 
     return {
       ok: true,
       currentVersion,
       latestVersion,
-      hasUpdate: isNewerVersion(latestVersion, currentVersion),
+      hasUpdate,
       releaseName: release.name || release.tag_name,
-      installerAsset: installerAsset
-        ? {
-            name: installerAsset.name,
-            size: installerAsset.size,
-            downloadUrl: installerAsset.browser_download_url
-          }
-        : null
+      installerAsset
     };
   } catch (error) {
-    return { ok: false, currentVersion, error: error.message };
+    const message = error && error.name === "AbortError"
+      ? "Проверка обновлений превысила 20 секунд."
+      : error.message;
+    return { ok: false, currentVersion, error: message };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 async function downloadUpdateInstaller(asset, sender) {
-  const response = await net.fetch(asset.downloadUrl, {
-    headers: { "User-Agent": `${REPO_NAME}/${app.getVersion()}` }
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(`Не удалось скачать установщик. Статус: ${response.status}.`);
-  }
-
-  const totalBytes = Number(response.headers.get("content-length")) || asset.size || 0;
-  const installerPath = path.join(updatesDir, sanitizeFileName(asset.name));
+  const verifiedAsset = validateInstallerAsset(
+    asset,
+    { owner: REPO_OWNER, name: REPO_NAME },
+    asset && asset.version
+  );
+  const installerPath = path.join(updatesDir, verifiedAsset.name);
   const tmpPath = `${installerPath}.tmp`;
-  const fileStream = fs.createWriteStream(tmpPath);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_DOWNLOAD_TIMEOUT_MS);
   let downloadedBytes = 0;
+  let completed = false;
 
-  await new Promise((resolve, reject) => {
-    Readable.fromWeb(response.body)
-      .on("data", (chunk) => {
-        downloadedBytes += chunk.length;
-        if (sender && totalBytes > 0) {
-          sender.send("updates:downloadProgress", {
-            downloadedBytes,
-            totalBytes,
-            progress: Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100))
-          });
-        }
-      })
-      .on("error", reject)
-      .pipe(fileStream)
-      .on("error", reject)
-      .on("finish", resolve);
-  });
+  safeUnlink(tmpPath);
+  try {
+    const response = await net.fetch(verifiedAsset.downloadUrl, {
+      headers: { "User-Agent": `${REPO_NAME}/${app.getVersion()}` },
+      signal: controller.signal
+    });
 
-  fs.renameSync(tmpPath, installerPath);
-  return installerPath;
+    if (!response.ok || !response.body) {
+      throw new Error(`Не удалось скачать установщик. Статус: ${response.status}.`);
+    }
+
+    const hash = createHash("sha256");
+    const source = Readable.fromWeb(response.body);
+    source.on("data", (chunk) => {
+      downloadedBytes += chunk.length;
+      hash.update(chunk);
+      sendToRenderer(sender, "updates:downloadProgress", {
+        downloadedBytes,
+        totalBytes: verifiedAsset.size,
+        progress: Math.min(100, Math.floor((downloadedBytes / verifiedAsset.size) * 100))
+      });
+    });
+
+    await pipeline(source, fs.createWriteStream(tmpPath, { flags: "wx" }));
+    const actualSha256 = hash.digest("hex");
+    verifyInstallerDownload(verifiedAsset, downloadedBytes, actualSha256);
+    safeUnlink(installerPath);
+    fs.renameSync(tmpPath, installerPath);
+    completed = true;
+    logEvent("info", "updates.downloadVerified", {
+      installerPath,
+      bytes: downloadedBytes,
+      sha256: actualSha256
+    });
+    return installerPath;
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("Скачивание обновления превысило 30 минут.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (!completed) {
+      safeUnlink(tmpPath);
+    }
+  }
 }
 
 function launchSilentInstallerAfterQuit(installerPath) {
@@ -870,23 +1038,6 @@ function existingDirectory(value) {
   return value && fs.existsSync(value) ? value : undefined;
 }
 
-function normalizeVersion(version) {
-  return String(version || "").replace(/^v/i, "").trim();
-}
-
-function isNewerVersion(latest, current) {
-  const latestParts = normalizeVersion(latest).split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const currentParts = normalizeVersion(current).split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const count = Math.max(latestParts.length, currentParts.length);
-
-  for (let index = 0; index < count; index += 1) {
-    if ((latestParts[index] || 0) !== (currentParts[index] || 0)) {
-      return (latestParts[index] || 0) > (currentParts[index] || 0);
-    }
-  }
-  return false;
-}
-
 function compactError(value) {
   return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-8).join("\n");
 }
@@ -918,6 +1069,34 @@ function safeUnlink(filePath) {
     fs.unlinkSync(filePath);
   } catch (_error) {
     // Temporary file cleanup is best-effort.
+  }
+}
+
+function sendToRenderer(sender, channel, payload) {
+  try {
+    if (sender && !sender.isDestroyed()) {
+      sender.send(channel, payload);
+    }
+  } catch (error) {
+    logEvent("warn", "renderer.sendFailed", { channel, error });
+  }
+}
+
+function pruneFiles(directory, predicate, retainCount) {
+  try {
+    const files = fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && predicate(entry.name))
+      .map((entry) => {
+        const filePath = path.join(directory, entry.name);
+        return { filePath, modified: fs.statSync(filePath).mtimeMs };
+      })
+      .sort((left, right) => right.modified - left.modified);
+
+    for (const stale of files.slice(Math.max(0, retainCount))) {
+      safeUnlink(stale.filePath);
+    }
+  } catch (_error) {
+    // Generated-file retention is best-effort and must not block startup.
   }
 }
 

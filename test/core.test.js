@@ -120,6 +120,12 @@ test("latest track version and continuous EXR sequence are discovered", (context
   const fromVersionFolder = resolveLatestTrack(path.join(camera, "v001"));
   assert.equal(fromVersionFolder.version, 3);
 
+  const directTrackPath = path.join(camera, "SHOT_0010_distort_v009.nk");
+  fs.writeFileSync(directTrackPath, STATIC_NODE);
+  const directTrack = resolveLatestTrack(directTrackPath);
+  assert.equal(directTrack.cameraDir, camera);
+  assert.equal(directTrack.version, 9);
+
   const plateDir = path.join(root, "plate");
   fs.mkdirSync(plateDir);
   for (const frame of [1001, 1002, 1003]) {

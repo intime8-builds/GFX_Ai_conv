@@ -4,6 +4,9 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const PYTHON_TIMEOUT_MS = 2 * 60_000;
+const MAX_PYTHON_OUTPUT_BYTES = 4 * 1024 * 1024;
+
 function findNukeRuntime() {
   const programFiles = process.env.ProgramFiles || "C:\\Program Files";
   const candidates = fs.readdirSync(programFiles, { withFileTypes: true })
@@ -87,27 +90,83 @@ function runPythonJson(runtime, vendorPath, scriptPath, args = []) {
     });
     let stdout = "";
     let stderr = "";
+    let outputBytes = 0;
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      callback(value);
+    };
+    const appendOutput = (target, chunk) => {
+      if (settled) {
+        return target;
+      }
+      outputBytes += chunk.length;
+      if (outputBytes > MAX_PYTHON_OUTPUT_BYTES) {
+        terminateProcessTree(child);
+        settle(reject, new Error("Python превысил допустимый объём диагностического вывода."));
+        return target;
+      }
+      return target + chunk.toString();
+    };
+    const timeout = setTimeout(() => {
+      terminateProcessTree(child);
+      settle(reject, new Error("Python preview не завершился за 2 минуты."));
+    }, PYTHON_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout = appendOutput(stdout, chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr = appendOutput(stderr, chunk);
     });
-    child.on("error", reject);
+    child.on("error", (error) => settle(reject, error));
     child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `Python завершился с кодом ${code}.`));
+        settle(reject, new Error(stderr.trim() || `Python завершился с кодом ${code}.`));
         return;
       }
 
       try {
-        resolve(JSON.parse(stdout));
+        settle(resolve, JSON.parse(stdout));
       } catch (_error) {
-        reject(new Error(`Python вернул некорректный JSON: ${stdout.slice(0, 500)}`));
+        settle(reject, new Error(`Python вернул некорректный JSON: ${stdout.slice(0, 500)}`));
       }
     });
   });
+}
+
+function terminateProcessTree(child) {
+  if (!child || child.exitCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32" && child.pid) {
+    const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    killer.on("error", () => {
+      try {
+        child.kill();
+      } catch (_error) {
+        // The child may have exited between taskkill creation and this callback.
+      }
+    });
+    return;
+  }
+
+  try {
+    child.kill("SIGKILL");
+  } catch (_error) {
+    // The child may have already exited.
+  }
 }
 
 function compareVersions(left, right) {
