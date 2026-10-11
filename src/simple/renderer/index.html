@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file: http://127.0.0.1:* http://localhost:*; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+  <title>GFX Ai Conv</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="../../../node_modules/lucide/dist/umd/lucide.js"></script>
+  <script defer src="renderer.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="brand">GFX <span>Ai Conv</span><span id="version" class="version"></span></div>
+    <div class="header-actions">
+      <button id="update-button" class="icon-button" title="Проверить обновления" aria-label="Проверить обновления"><i data-lucide="download"></i></button>
+      <button id="logs-button" class="icon-button" title="Собрать журнал" aria-label="Собрать журнал"><i data-lucide="file-text"></i></button>
+      <button id="faq-button" class="icon-button" title="Вопросы и ответы" aria-label="Вопросы и ответы"><i data-lucide="circle-help"></i></button>
+    </div>
+  </header>
+  <main>
+    <section class="setup" aria-label="Настройки конвертации">
+      <div class="mode-row">
+        <div class="segmented" role="group" aria-label="Направление">
+          <button id="mode-ai" type="button" aria-pressed="true">Для AI</button>
+          <button id="mode-nuke" type="button" aria-pressed="false">В Nuke</button>
+        </div>
+        <span id="runtime-status" class="muted" role="status">Подключение…</span>
+      </div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="startup-error" class="error" role="alert" hidden></div>
+      <div class="output-row">
+        <label for="output-dir">Папка результата</label>
+        <div class="path-control"><input id="output-dir" type="text" readonly placeholder="Не выбрана"><button id="output-button" class="icon-button" title="Выбрать папку результата" aria-label="Выбрать папку результата"><i data-lucide="folder-open"></i></button></div>
+      </div>
+      <div id="drop-zone" class="drop-zone" tabindex="0" role="group" aria-label="Добавить файлы или папку перетаскиванием">
+        <i data-lucide="files" class="drop-icon"></i>
+        <span>Файлы или папка</span>
+        <div class="source-actions"><button id="files-button"><i data-lucide="file-plus-2"></i>Файлы</button><button id="folder-button"><i data-lucide="folder-plus"></i>Папка</button></div>
+      </div>
+      <div id="analysis-status" class="muted" role="status" hidden></div>
+      <details id="advanced">
+        <summary>Дополнительные настройки <span id="config-label" class="muted"></span></summary>
+        <div class="settings-grid">
+          <label class="wide">Цветовое пространство источника<select id="input-color"><option value="">По данным источника</option></select></label>
+          <label>FPS источника (EXR)<input id="input-fps" type="number" min="0.001" step="any" value="24"></label>
+          <label>FPS результата<input id="output-fps" type="number" min="0.001" step="any" placeholder="Исходный"></label>
+          <label>Ширина<input id="width" type="number" min="1" step="1" placeholder="Исходная"></label>
+          <label>Высота<input id="height" type="number" min="1" step="1" placeholder="Исходная"></label>
+          <label>Начало, с<input id="range-start" type="number" min="0" step="any" placeholder="С начала"></label>
+          <label>Конец, с<input id="range-end" type="number" min="0" step="any" placeholder="До конца"></label>
+          <label id="conversion-field" class="wide" hidden>Возврат<select id="conversion"><option value="preserve">Сохранить исходный формат</option><option value="exr">Конвертировать в EXR</option></select></label>
+          <label id="export-field">Экспорт одиночного EXR<select id="export-kind"><option value="video">Видео</option><option value="png">PNG</option></select></label>
+          <label id="frame-field">Индекс кадра (с 0)<input id="frame-index" type="number" min="0" step="1" value="0"></label>
+          <div class="manifest-field wide"><label for="manifest">Манифест источника (необязательно)</label><div class="path-control"><input id="manifest" readonly placeholder="Не выбран"><button id="manifest-button" class="icon-button" title="Выбрать JSON-манифест" aria-label="Выбрать JSON-манифест"><i data-lucide="file-json"></i></button><button id="manifest-clear" class="icon-button" title="Убрать манифест" aria-label="Убрать манифест"><i data-lucide="x"></i></button></div></div>
+        </div>
+        <div id="settings-error" class="error" role="alert" hidden></div>
+      </details>
+    </section>
+    <section class="workspace" aria-label="Очередь и предпросмотр">
+      <div class="queue-pane">
+        <div class="section-heading"><h1>Очередь <span id="queue-count" class="count">0</span></h1><button id="clear-button" class="icon-button" title="Очистить очередь" aria-label="Очистить очередь"><i data-lucide="trash-2"></i></button></div>
+        <div id="queue" class="queue" aria-label="Задания"><div class="empty">Нет заданий</div></div>
+      </div>
+      <div class="preview-pane">
+        <div class="section-heading"><h2>Предпросмотр</h2><button id="preview-button" class="icon-button" title="Обновить предпросмотр" aria-label="Обновить предпросмотр"><i data-lucide="refresh-cw"></i></button></div>
+        <div class="preview-media"><img id="preview-image" alt="Кадр выбранного источника" hidden><span id="preview-placeholder" class="muted">Источник не выбран</span></div>
+        <div id="preview-caption" class="muted"></div>
+        <div id="preview-error" class="error" role="alert" hidden></div>
+        <div id="job-details"></div>
+      </div>
+    </section>
+  </main>
+  <footer class="transport">
+    <div id="queue-status" class="muted" role="status">Готово</div>
+    <div class="transport-actions">
+      <button id="pause-button" class="icon-button" title="Пауза после текущего задания" aria-label="Пауза после текущего задания" aria-pressed="false"><i data-lucide="pause"></i></button>
+      <button id="stop-button" class="icon-button" title="Остановить" aria-label="Остановить"><i data-lucide="square"></i></button>
+      <button id="start-button" class="primary"><i data-lucide="play"></i><span>Начать</span></button>
+    </div>
+  </footer>
+  <dialog id="candidates-dialog" aria-labelledby="candidates-title">
+    <div class="dialog-heading"><h2 id="candidates-title">Источники в папке</h2><button id="candidates-close" class="icon-button" title="Отмена" aria-label="Отмена"><i data-lucide="x"></i></button></div>
+    <div id="candidate-list" class="candidate-list"></div>
+    <div class="dialog-actions"><button id="candidates-cancel">Отмена</button><button id="candidates-add" class="primary">Добавить выбранные</button></div>
+  </dialog>
+  <dialog id="clear-dialog" aria-labelledby="clear-title">
+    <h2 id="clear-title">Очистить очередь?</h2><p id="clear-description"></p>
+    <div class="dialog-actions"><button id="clear-cancel">Отмена</button><button id="clear-confirm" class="danger">Очистить</button></div>
+  </dialog>
+  <dialog id="update-dialog" aria-labelledby="update-title">
+    <div class="dialog-heading"><h2 id="update-title">Обновление</h2><button id="update-close" class="icon-button" title="Закрыть" aria-label="Закрыть"><i data-lucide="x"></i></button></div>
+    <p id="update-info"></p><pre id="update-notes"></pre><progress id="update-progress" max="100" value="0" hidden></progress><p id="update-status" class="muted" role="status"></p>
+    <div class="dialog-actions"><button id="update-install" class="primary"><i data-lucide="download"></i>Установить</button></div>
+  </dialog>
+  <dialog id="faq-dialog" class="faq-dialog" aria-labelledby="faq-title">
+    <div class="dialog-heading"><h2 id="faq-title">Вопросы и ответы</h2><button id="faq-close" class="icon-button" title="Закрыть" aria-label="Закрыть"><i data-lucide="x"></i></button></div>
+    <div class="faq-content">
+      <details open><summary>Что делают два режима?</summary><p>«Для AI» подготавливает изображение или видео для AI-сервисов. Это преобразование в SDR, а не обещание сохранения всего исходного диапазона. «В Nuke» подготавливает полученный результат и файл .nk для дальнейшей работы. Для конвертации установленный Nuke не нужен; он понадобится, чтобы открыть .nk.</p></details>
+      <details><summary>Как выбирается цвет?</summary><p>Список берётся из реальной конфигурации OCIO ACES 1.2. Для неизвестного EXR предлагается ACES - ACES2065-1, но это не определение цвета файла: выберите верное пространство и явно подтвердите его для каждого задания. Для видео с известными SDR-метаданными возможно автоматическое назначение Output - Rec.709. Неизвестное видео также требует подтверждения. Output - sRGB в ACES 1.2 используется для sRGB-вывода; оно не взаимозаменяемо с линейным ACEScg.</p></details>
+      <details><summary>Почему у EXR 24 FPS?</summary><p>У EXR обычно нет надёжной частоты воспроизведения. По умолчанию используется 24 FPS, её можно изменить до добавления источника. Видео сохраняет известную исходную частоту. Пустой FPS результата сохраняет частоту источника; пустые ширина и высота сохраняют размер. Диапазон задаётся в секундах, обе границы необязательны.</p></details>
+      <details><summary>Что сохраняется при возврате в Nuke?</summary><p>По умолчанию сохраняется исходный формат без изменения геометрии или диапазона. MP4 возвращается копией вместе с .nk, а не становится исходным EXR. Альтернативный вариант — конвертация в EXR. Ни EXR-контейнер, ни .nk не восстанавливают потерянные HDR-данные, детали или цвет исходника после AI-обработки. JSON-манифест можно связать с заданием для передачи имеющихся сведений об источнике.</p></details>
+      <details><summary>Что происходит с альфой?</summary><p>Если backend обнаружил альфа-канал, экспорт для AI заблокирован до явного подтверждения сведения альфы на чёрный фон. Это удаляет прозрачность из результата. Подтверждение относится только к выбранному заданию; исходный файл остаётся нетронутым.</p></details>
+      <details><summary>Можно ли получить PNG из EXR?</summary><p>Для одиночного EXR доступен экспорт PNG вместо видео. Индекс кадра начинается с 0. Эта опция не переключает всю последовательность или видео в набор PNG.</p></details>
+      <details><summary>Как обрабатываются папки и пропуски кадров?</summary><p>Источники определяет backend. Если в папке несколько кандидатов, выберите нужные из полного списка. Кандидат с пропусками кадров заблокирован. Нумерация и состав последовательностей не угадываются интерфейсом.</p></details>
+      <details><summary>Пауза, остановка и повтор</summary><p>Пауза дожидается окончания текущего задания. Остановка запрашивает отмену текущей операции; очередь сохраняется. Ошибочное или остановленное задание можно повторить отдельно. Очистка активной очереди требует подтверждения, затем запрашивает остановку и дожидается её окончания.</p></details>
+      <details><summary>Изменяются ли исходники и задания в очереди?</summary><p>Исходные файлы не изменяются. Папка результата запоминается. Настройки сохраняются при изменении и применяются к новым заданиям; уже добавленные задания сохраняют свой снимок настроек. Цвет и согласие на сведение альфы проверяются отдельно для каждого источника. Результаты конвертации сохраняются отдельно; очистка очереди не удаляет файлы.</p></details>
+    </div>
+  </dialog>
+</body>
+</html>
