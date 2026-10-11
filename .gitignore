@@ -9,3 +9,9 @@ __pycache__/
 .env
 .DS_Store
 Thumbs.db
+.venv-simple/
+.cache-simple/
+resources/simple-runtime/
+resources/aces_1.2/
+output/
+build/simple-worker/

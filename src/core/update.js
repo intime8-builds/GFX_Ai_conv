@@ -24,13 +24,14 @@ function normalizeSha256Digest(value) {
   return match ? match[1].toLowerCase() : "";
 }
 
-function validateInstallerAsset(asset, repository, expectedVersion = "") {
+function validateInstallerAsset(asset, repository, expectedVersion = "", product = "GFX Ai Conv") {
   if (!asset || typeof asset !== "object") {
     throw new Error("В релизе отсутствует установщик обновления.");
   }
 
   const name = String(asset.name || "").trim();
-  const nameMatch = name.match(/^GFX[. ]Ai[. ]Conv-([0-9A-Za-z.+-]+)-installer-x64\.exe$/i);
+  const productPattern = product.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "[. ]");
+  const nameMatch = name.match(new RegExp(`^${productPattern}-([0-9A-Za-z.+-]+)-installer-x64\\.exe$`, "i"));
   if (
     !name
     || name !== path.basename(name)

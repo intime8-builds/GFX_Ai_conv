@@ -1,21 +1,25 @@
 {
-  "name": "gfx_ai_conv",
-  "version": "0.2.0-alpha.6",
-  "description": "Локальная подготовка AI-конформа: denoise, 3DE undistort, Rec.709 ProRes 4444 и Topview.",
-  "main": "src/main.js",
+  "name": "gfx-ai-conv-simple-preview",
+  "version": "0.3.0-alpha.1",
+  "description": "Автономная локальная конвертация EXR, MOV и MP4 для AI и Nuke.",
+  "main": "src/simple/main.js",
   "author": "intime8",
   "license": "MIT",
   "private": false,
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
+    "backend:prepare": "python scripts/prepare-simple.py",
+    "test:backend": "python -m unittest discover -s backend/simple -p test_*.py -v",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
     "dist:zip": "electron-builder --win zip"
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "npm:@derhuerst/ffprobe-static@5.3.0",
+    "lucide": "1.55.0",
     "semver": "^7.8.5"
   },
   "devDependencies": {
@@ -23,26 +27,47 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.intime8.gfxaiconv",
-    "productName": "GFX Ai Conv",
+    "appId": "com.intime8.gfxaiconv.simple.preview",
+    "productName": "GFX Ai Conv Simple Preview",
     "copyright": "Copyright © 2026 intime8",
     "asar": true,
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "backend/**",
-      "vendor/**"
+      "node_modules/ffprobe-static/**"
     ],
     "files": [
-      "src/**/*",
-      "backend/**/*",
-      "vendor/**/*",
+      "src/simple/**/*",
+      "src/core/logger.js",
+      "src/core/update.js",
       "THIRD_PARTY_NOTICES.md",
+      "README_SIMPLE.md",
       "package.json",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/simple-runtime/gfx-worker",
+        "to": "simple-runtime/gfx-worker"
+      },
+      {
+        "from": "resources/simple-runtime/licenses",
+        "to": "licenses"
+      },
+      {
+        "from": "resources/aces_1.2",
+        "to": "aces_1.2",
+        "filter": [
+          "config.ocio",
+          "luts/**/*",
+          "README.md",
+          "bundle.json",
+          "LICENSE*"
+        ]
+      }
+    ],
     "directories": {
       "buildResources": "build",
-      "output": "dist"
+      "output": "dist-simple"
     },
     "win": {
       "target": [
@@ -66,7 +91,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }

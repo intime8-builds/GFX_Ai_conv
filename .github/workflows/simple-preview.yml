@@ -1,0 +1,86 @@
+name: Build Simple Preview
+
+on:
+  push:
+    branches: [codex/simple-ai-converter]
+    tags: ['simple-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simple-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/simple/requirements.txt
+      - run: npm ci
+      - run: python -m pip install -r backend/simple/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            resources/aces_1.2
+            .cache-simple/aces-tree-*.json
+          key: aces12-3af87f1d70ca3ea2a19cfd431b80de8014a00763
+      - run: python scripts/prepare-simple.py
+      - run: npm test
+      - run: python -m unittest discover -s backend/simple -p test_*.py -v
+      - run: npm run dist -- --publish never
+      - run: node scripts/smoke-worker.cjs
+      - name: Standalone worker check
+        shell: pwsh
+        run: |
+          $root = Resolve-Path 'dist-simple/win-unpacked'
+          $worker = Join-Path $root 'resources/simple-runtime/gfx-worker/gfx-worker.exe'
+          $config = Join-Path $root 'resources/aces_1.2/config.ocio'
+          $ffmpeg = Join-Path $root 'resources/app.asar.unpacked/node_modules/ffmpeg-static/ffmpeg.exe'
+          $ffprobe = Join-Path $root 'resources/app.asar.unpacked/node_modules/ffprobe-static/ffprobe.exe'
+          $env:PYTHONPATH = ''
+          $env:PYTHONHOME = ''
+          '{}' | & $worker info --config $config --ffmpeg $ffmpeg --ffprobe $ffprobe
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone worker failed' }
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist-simple -File | Where-Object Extension -in '.exe','.zip' | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content -Encoding ascii dist-simple/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gfx-simple-preview-windows
+          path: |
+            dist-simple/*.exe
+            dist-simple/*.zip
+            dist-simple/SHA256SUMS.txt
+          retention-days: 14
+  release:
+    if: startsWith(github.ref, 'refs/tags/simple-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gfx-simple-preview-windows
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          files: release/*
