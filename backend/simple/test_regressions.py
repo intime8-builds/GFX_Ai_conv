@@ -78,6 +78,41 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(result["errors"])
         self.assertFalse(list(self.output.iterdir()))
 
+    def test_high_bit_yuv_decode_levels_matrix_and_alpha(self):
+        for depth in (10, 12, 16):
+            for levels in ("tv", "pc"):
+                maximum = (1 << depth) - 1
+                offset, span = (16 << (depth-8), 219 << (depth-8)) if levels == "tv" else (0, maximum)
+                chroma_span = 224 << (depth-8) if levels == "tv" else maximum
+                planes = np.full((4, 16, 16), 1 << (depth-1), dtype="<u2")
+                planes[0, :, :4] = offset + span
+                planes[0, :, 4:] = offset + round(span * 0.5)
+                planes[1, :, 12:] -= round(chroma_span * 0.1)
+                planes[2, :, 12:] += round(chroma_span * 0.2)
+                planes[3, :, :4] = maximum
+                planes[3, :, 4:8] = 0
+                path = self.root / f"levels-{depth}-{levels}.mkv"
+                self.ff(["-f", "rawvideo", "-pixel_format", f"yuva444p{depth}le", "-video_size", "16x16",
+                    "-framerate", "24", "-i", "pipe:0", "-c:v", "ffv1", "-level", "3", "-y", path], planes.tobytes())
+                source = {**probe(path, FFPROBE), "path": str(path)}
+                for matrix, kr, kb in (("bt709", 0.2126, 0.0722), ("bt601", 0.299, 0.114), ("bt2020", 0.2627, 0.0593)):
+                    with self.subTest(depth=depth, levels=levels, matrix=matrix):
+                        pixels = self.worker.decode_frame(source, 0, {"inputColorSpace": "Output - Rec.709",
+                            "inputMatrix": matrix, "inputRange": levels})
+                        white_alpha = float(pixels[8, 2, 3])
+                        self.assertAlmostEqual(white_alpha, 1, delta=1.1/maximum)
+                        self.assertLess(float(np.max(np.abs(pixels[8, 2, :3] / white_alpha - 1))), 0.0005)
+                        self.assertEqual(float(pixels[8, 6, 3]), 0)
+                        self.assertEqual(float(pixels[8, 6, :3].max()), 0)
+                        alpha = float(pixels[8, 10, 3])
+                        self.assertAlmostEqual(alpha, 0.5, delta=0.001)
+                        self.assertLess(float(np.max(np.abs(pixels[8, 10, :3] / alpha - 0.5))), 0.001)
+                        y = (float(planes[0, 8, 14])-offset)/span
+                        cb = (float(planes[1, 8, 14])-(1 << (depth-1)))/chroma_span
+                        cr = (float(planes[2, 8, 14])-(1 << (depth-1)))/chroma_span
+                        expected = [y+2*(1-kr)*cr, y-2*kb*(1-kb)/(1-kr-kb)*cb-2*kr*(1-kr)/(1-kr-kb)*cr, y+2*(1-kb)*cb]
+                        self.assertLess(float(np.max(np.abs(pixels[8, 14, :3] / pixels[8, 14, 3] - expected))), 0.001)
+
     def test_explicit_untagged_matrix_matches_tagged(self):
         source = self.video()
         untagged = self.root / "untagged.mov"

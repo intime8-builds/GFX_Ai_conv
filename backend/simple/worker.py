@@ -196,6 +196,14 @@ class Worker:
 
     def decode_filter(self, source, settings, output_matrix=None):
         matrix, levels = self.decode_parameters(source, settings)
+        pixel_format = source.get("pixelFormat", "")
+        high_bit_yuv = pixel_format.startswith("yuv") and pixel_format.endswith(tuple(
+            f"p{depth}{order}" for depth in (10, 12, 14, 16) for order in ("le", "be")))
+        if output_matrix is None and high_bit_yuv:
+            # swscale lowers high-bit YUV white; zscale needs integer RGB to keep alpha full-range.
+            matrix = {"bt709": "709", "bt601": "170m", "bt2020": "2020_ncl"}[matrix]
+            rgb = "gbrap16le" if source.get("hasAlpha") else "gbrp16le"
+            return f"zscale=matrixin={matrix}:rangein={levels}:matrix=gbr:range=pc,format={rgb}"
         return f"scale=in_color_matrix={matrix}:in_range={levels}:out_range={'tv' if output_matrix else 'pc'}" + (f":out_color_matrix={output_matrix}" if output_matrix else "")
 
     def video_filters(self, source, settings, fps=None, decoded_rgb=False):
