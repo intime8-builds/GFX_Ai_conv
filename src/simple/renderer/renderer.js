@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const api = window.simpleConv;
   const defaults = {
-    direction: "ai", outputDir: "", inputColorSpace: "", inputFps: 24,
+    direction: "ai", outputDir: "", inputColorSpace: "", inputMatrix: "auto", inputRange: "auto", inputFps: 24,
     outputFps: "", width: "", height: "", rangeStart: "", rangeEnd: "",
     exportKind: "video", frameIndex: 0, conversion: "preserve",
     flattenAlpha: false, sourceManifest: "",
@@ -29,9 +29,13 @@
     cancelled: "Отменено", canceled: "Отменено",
   };
   const settingsInputs = {
-    inputColorSpace: "input-color", inputFps: "input-fps", outputFps: "output-fps",
+    inputColorSpace: "input-color", inputMatrix: "input-matrix", inputRange: "input-range", inputFps: "input-fps", outputFps: "output-fps",
     width: "width", height: "height", rangeStart: "range-start", rangeEnd: "range-end",
     exportKind: "export-kind", frameIndex: "frame-index", conversion: "conversion",
+  };
+  const videoSettingLabels = {
+    inputMatrix: { auto: "Авто", bt709: "BT.709", bt601: "BT.601", bt2020: "BT.2020" },
+    inputRange: { auto: "Авто", tv: "Ограниченный", pc: "Полный" },
   };
   const numericSettings = new Set(["inputFps", "outputFps", "width", "height", "rangeStart", "rangeEnd", "frameIndex"]);
   const clone = (value) => structuredClone(value);
@@ -88,6 +92,9 @@
 
   function settingsError(settings) {
     const nuke = settings.direction === "nuke";
+    for (const [key, labels] of Object.entries(videoSettingLabels)) {
+      if (!Object.hasOwn(labels, settings[key])) return "Проверьте матрицу YUV и диапазон уровней видео.";
+    }
     if (!Number.isFinite(Number(settings.inputFps)) || Number(settings.inputFps) <= 0) return "FPS источника EXR должен быть больше 0.";
     if (!nuke) {
       for (const key of ["outputFps", "width", "height", "rangeStart", "rangeEnd"]) {
@@ -274,7 +281,7 @@
     colorLabel.append(select);
     panel.append(colorLabel);
     if (job.needsConfirmation) {
-      panel.append(el("div", "warning", "Цвет источника не подтверждён метаданными. Проверьте выбранное пространство."));
+      panel.append(el("div", "warning", job.source.kind === "video" && job.source.hdr ? "Источник HDR. Выберите и подтвердите цветовое пространство; SDR автоматически не назначается." : "Цвет источника не подтверждён метаданными. Проверьте выбранное пространство."));
       panel.append(checkbox("Подтверждаю цветовое пространство этого источника", job.colorConfirmed, locked || !select.value, (checked) => {
         job.colorConfirmed = checked;
         renderQueue();
@@ -297,6 +304,7 @@
     if (job.settings.width !== "" || job.settings.height !== "") details.push(`${job.settings.width || "исходная"} × ${job.settings.height || "исходная"}`);
     if (job.settings.rangeStart !== "" || job.settings.rangeEnd !== "") details.push(`${job.settings.rangeStart || 0}–${job.settings.rangeEnd === "" ? "конец" : job.settings.rangeEnd} с`);
     panel.append(el("div", "detail-line", details.join(" · ")));
+    if (job.source.kind === "video") panel.append(el("div", "detail-line", `Матрица YUV: ${videoSettingLabels.inputMatrix[job.settings.inputMatrix]} · Диапазон уровней: ${videoSettingLabels.inputRange[job.settings.inputRange]}`));
     if (job.settings.sourceManifest) panel.append(el("div", "detail-line", `Манифест: ${job.settings.sourceManifest}`));
     for (const warning of new Set([...(job.source.warnings || []), ...(job.result?.warnings || [])])) panel.append(el("div", "warning", warning));
     if (job.error) panel.append(el("div", "error", job.error));
@@ -378,14 +386,17 @@
 
   function makeJob(source, base) {
     const spaces = state.colors;
+    const hdrVideo = source.kind === "video" && !!source.hdr;
     const explicit = spaces.includes(base.inputColorSpace) ? base.inputColorSpace : "";
-    const known = spaces.includes(source.colorSpace) ? source.colorSpace : "";
-    const suggested = spaces.includes(source.suggestedColorSpace) ? source.suggestedColorSpace : "";
+    const known = !hdrVideo && spaces.includes(source.colorSpace) ? source.colorSpace : "";
+    const suggested = !hdrVideo && spaces.includes(source.suggestedColorSpace) ? source.suggestedColorSpace : "";
     const color = explicit || known || suggested || (isExr(source) && spaces.includes(state.defaultSpace) ? state.defaultSpace : "");
-    const needsConfirmation = !!source.needsColorConfirmation || (isExr(source) && !known) || (!known && !suggested) || (explicit && explicit !== (known || suggested));
+    const needsConfirmation = hdrVideo || !!source.needsColorConfirmation || (isExr(source) && !known) || (!known && !suggested) || (explicit && explicit !== (known || suggested));
     const nuke = base.direction === "nuke";
     const settings = {
       ...clone(base), inputColorSpace: color,
+      inputMatrix: source.kind === "video" ? base.inputMatrix : "auto",
+      inputRange: source.kind === "video" ? base.inputRange : "auto",
       inputFps: isExr(source) ? base.inputFps : "",
       exportKind: !nuke ? base.exportKind : "video",
       frameIndex: !nuke && base.exportKind === "png" ? Number(base.frameIndex) : 0,
@@ -739,6 +750,9 @@
       if (!api) throw new Error("Недоступен интерфейс window.simpleConv. Откройте конвертер через приложение.");
       const initial = await api.getInitialState();
       state.settings = { ...defaults, ...initial.settings };
+      for (const [key, labels] of Object.entries(videoSettingLabels)) {
+        if (!Object.hasOwn(labels, state.settings[key])) state.settings[key] = "auto";
+      }
       state.colors = [...new Set(initial.colors?.spaces || [])];
       state.defaultSpace = initial.colors?.defaultSpace || "ACES - ACES2065-1";
       state.ready = !!initial.runtime?.ready && state.colors.length > 0;
