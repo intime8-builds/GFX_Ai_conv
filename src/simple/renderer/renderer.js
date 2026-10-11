@@ -21,6 +21,13 @@
     pending: "В очереди", running: "В работе", done: "Готово",
     failed: "Ошибка", cancelled: "Остановлено", blocked: "Проверка",
   };
+  const phaseLabels = {
+    copy: "Копирование…", conversion: "Конвертация…", verify: "Проверка результата…",
+    done: "Готово", download: "Загрузка обновления…", install: "Установка обновления…",
+    encode: "Экспорт…", complete: "Готово", completed: "Готово", ready: "Готово",
+    installed: "Обновление установлено", error: "Ошибка", failed: "Ошибка",
+    cancelled: "Отменено", canceled: "Отменено",
+  };
   const settingsInputs = {
     inputColorSpace: "input-color", inputFps: "input-fps", outputFps: "output-fps",
     width: "width", height: "height", rangeStart: "range-start", rangeEnd: "range-end",
@@ -30,7 +37,8 @@
   const clone = (value) => structuredClone(value);
   const selectedJob = () => state.jobs.find((job) => job.id === state.selectedId);
   const isExr = (source) => /\.exr$/i.test(source.path || "") || source.files?.some((path) => /\.exr$/i.test(path));
-  const singleExr = (source) => isExr(source) && (source.kind === "image" || (source.kind === "sequence" && source.frameCount === 1));
+  const needsAlphaFlatten = (job) => job.settings.direction === "ai" && job.settings.exportKind === "video" && job.source.hasAlpha;
+  const progressText = (progress, fallback) => /[А-Яа-яЁё]/.test(progress.message || "") ? progress.message : (phaseLabels[progress.phase] || fallback);
   const messageOf = (error) => error?.message || String(error || "Неизвестная ошибка");
   const numberText = (value) => Number.isFinite(Number(value)) && value !== null && value !== "" && value !== undefined ? String(Math.round(Number(value) * 1000) / 1000) : "?";
 
@@ -80,7 +88,7 @@
 
   function settingsError(settings) {
     const nuke = settings.direction === "nuke";
-    if (!nuke && (!Number.isFinite(Number(settings.inputFps)) || Number(settings.inputFps) <= 0)) return "FPS источника EXR должен быть больше 0.";
+    if (!Number.isFinite(Number(settings.inputFps)) || Number(settings.inputFps) <= 0) return "FPS источника EXR должен быть больше 0.";
     if (!nuke) {
       for (const key of ["outputFps", "width", "height", "rangeStart", "rangeEnd"]) {
         const value = settings[key];
@@ -100,9 +108,11 @@
     if (!job.settings.outputDir) return "Не выбрана папка результата.";
     if (!state.colors.includes(job.settings.inputColorSpace)) return "Выберите пространство из конфигурации OCIO.";
     if (job.needsConfirmation && !job.colorConfirmed) return "Подтвердите цветовое пространство источника.";
-    if (job.settings.direction === "ai" && job.source.hasAlpha && !job.settings.flattenAlpha) return "Подтвердите сведение альфы на чёрный фон.";
-    if (job.settings.exportKind === "png" && (job.settings.frameIndex < 0 || !Number.isInteger(job.settings.frameIndex) || job.settings.frameIndex >= (job.source.frameCount || 1))) return "Индекс кадра выходит за пределы источника.";
-    return settingsError(isExr(job.source) ? job.settings : { ...job.settings, inputFps: defaults.inputFps });
+    if (needsAlphaFlatten(job) && !job.settings.flattenAlpha) return "Подтвердите сведение альфы на чёрный фон.";
+    const frameCount = job.source.frameCount ?? (job.source.kind === "image" ? 1 : undefined);
+    if (job.settings.exportKind === "png" && (job.settings.frameIndex < 0 || !Number.isInteger(job.settings.frameIndex) || (Number(frameCount) > 0 && job.settings.frameIndex >= Number(frameCount)))) return "Индекс кадра выходит за пределы источника.";
+    const usesInputFps = isExr(job.source) || (job.settings.direction === "nuke" && job.source.kind !== "video");
+    return settingsError(usesInputFps ? job.settings : { ...job.settings, inputFps: defaults.inputFps });
   }
 
   function updateControls() {
@@ -111,7 +121,7 @@
     $("drop-zone").setAttribute("aria-disabled", String(locked));
     const nuke = state.settings.direction === "nuke";
     for (const [key, id] of Object.entries(settingsInputs)) {
-      const notApplicable = nuke && ["inputFps", "outputFps", "width", "height", "rangeStart", "rangeEnd", "exportKind", "frameIndex"].includes(key);
+      const notApplicable = nuke && ["outputFps", "width", "height", "rangeStart", "rangeEnd", "exportKind", "frameIndex"].includes(key);
       $(id).disabled = locked || notApplicable || (key === "frameIndex" && state.settings.exportKind !== "png");
       $(id).title = notApplicable ? "При возврате в Nuke сохраняются параметры источника" : "";
     }
@@ -179,7 +189,7 @@
 
   function sourceMeta(source, settings) {
     const kind = { sequence: "Последовательность", image: "Изображение", video: "Видео" }[source.kind] || source.kind;
-    const fps = isExr(source) && settings.direction === "ai" ? settings.inputFps : source.fps;
+    const fps = isExr(source) || (settings.direction === "nuke" && source.kind !== "video") ? settings.inputFps : source.fps;
     return `${kind} · ${numberText(source.width)} × ${numberText(source.height)} · ${numberText(fps)} FPS${source.frameCount ? ` · ${source.frameCount} кадр.` : ""}`;
   }
 
@@ -204,7 +214,7 @@
       const bottom = el("div", "job-bottom");
       bottom.append(el("span", "muted", job.message || blocked || job.settings.inputColorSpace));
       const actions = el("div", "job-actions");
-      if (["failed", "cancelled"].includes(job.status)) actions.append(iconButton("rotate-ccw", "Повторить задание", () => retry(job.id), state.processing));
+      if (["done", "failed", "cancelled"].includes(job.status)) actions.append(iconButton("rotate-ccw", "Повторить задание", () => retry(job.id), state.processing || state.analyzing || state.choosing || state.installing));
       if (job.result?.outputPath) actions.append(iconButton("folder-open", "Открыть папку результата", () => guarded(() => api.openPath(parentPath(job.result.outputPath)))));
       actions.append(iconButton("x", "Убрать задание из очереди", () => removeJob(job.id), state.processing));
       bottom.append(actions);
@@ -270,13 +280,15 @@
         renderQueue();
       }));
     }
-    if (job.source.hasAlpha && job.settings.direction === "ai") {
+    if (needsAlphaFlatten(job)) {
       panel.append(el("div", "warning", "Обнаружена альфа. Прозрачность будет сведена на чёрный фон."));
       panel.append(checkbox("Разрешаю свести альфу на чёрный фон", job.settings.flattenAlpha, locked, (checked) => {
         job.settings = Object.freeze({ ...job.settings, flattenAlpha: checked });
         renderQueue();
         schedulePreview();
       }));
+    } else if (job.source.hasAlpha && job.settings.exportKind === "png") {
+      panel.append(el("div", "detail-line", "Альфа сохраняется в PNG."));
     }
     const details = [];
     if (job.settings.direction === "nuke") details.push(job.settings.conversion === "exr" ? "Возврат: EXR + .nk" : "Возврат: исходный формат + .nk");
@@ -292,7 +304,7 @@
       panel.append(el("div", "detail-line", `Файл: ${job.result.outputPath}`));
       if (job.result.manifestPath) panel.append(el("div", "detail-line", `Манифест: ${job.result.manifestPath}`));
       if (job.result.nukePath) panel.append(el("div", "detail-line", `Nuke: ${job.result.nukePath}`));
-      if (job.result.method) panel.append(el("div", "detail-line", job.result.method));
+      if (job.result.method) panel.append(el("div", "detail-line", phaseLabels[job.result.method] || "Экспорт завершён"));
     }
   }
 
@@ -375,8 +387,8 @@
     const settings = {
       ...clone(base), inputColorSpace: color,
       inputFps: isExr(source) ? base.inputFps : "",
-      exportKind: !nuke && singleExr(source) ? base.exportKind : "video",
-      frameIndex: !nuke && singleExr(source) && base.exportKind === "png" ? Number(base.frameIndex) : 0,
+      exportKind: !nuke ? base.exportKind : "video",
+      frameIndex: !nuke && base.exportKind === "png" ? Number(base.frameIndex) : 0,
       conversion: nuke ? base.conversion : "preserve",
       flattenAlpha: false, sourceManifest: nuke ? base.sourceManifest : "",
     };
@@ -386,7 +398,7 @@
       settings.height = "";
       settings.rangeStart = "";
       settings.rangeEnd = "";
-      settings.inputFps = isExr(source) ? (source.fps || base.inputFps) : "";
+      settings.inputFps = source.kind !== "video" ? base.inputFps : "";
     }
     return {
       id: crypto.randomUUID(), source: clone(source), settings: Object.freeze(settings),
@@ -488,15 +500,18 @@
   }
 
   function retry(id) {
-    if (state.processing) return;
+    if (state.processing || state.analyzing || state.choosing || state.installing) return;
     const job = state.jobs.find((item) => item.id === id);
-    if (!job || !["failed", "cancelled"].includes(job.status)) return;
-    job.status = "pending";
-    job.message = "";
-    job.error = "";
-    job.percent = 0;
+    if (!job || !["done", "failed", "cancelled"].includes(job.status)) return;
+    const invalid = settingsError(state.settings);
+    if (invalid) { notice(invalid); $("advanced").open = true; return; }
+    if (!state.settings.outputDir) { notice("Выберите папку результата перед повтором задания."); return; }
+    const next = makeJob(job.source, state.settings);
+    state.jobs.push(next);
+    state.selectedId = next.id;
     renderQueue();
-    if (job.id === state.selectedId) renderDetails();
+    renderDetails();
+    schedulePreview();
   }
 
   function removeJob(id) {
@@ -586,7 +601,7 @@
     const job = state.jobs.find((item) => item.id === progress.id);
     if (!job || job.status !== "running") return;
     if (Number.isFinite(Number(progress.percent))) job.percent = Math.max(0, Math.min(100, Number(progress.percent)));
-    job.message = progress.message || progress.phase || "Конвертация…";
+    job.message = progressText(progress, "Конвертация…");
     if (progress.frame !== undefined && progress.frames !== undefined) job.message += ` · ${progress.frame} / ${progress.frames}`;
     renderQueue();
   }
@@ -742,7 +757,7 @@
         if (!progress) return;
         $("update-progress").hidden = false;
         if (Number.isFinite(Number(progress.percent))) $("update-progress").value = Math.max(0, Math.min(100, Number(progress.percent)));
-        showMessage("update-status", progress.message || progress.phase || "Обновление…");
+        showMessage("update-status", progressText(progress, "Обновление…"));
         if (["done", "complete", "completed", "ready", "installed", "error", "failed", "cancelled", "canceled"].includes(progress.phase)) {
           state.installing = false;
           if (["done", "complete", "completed", "ready", "installed"].includes(progress.phase) && state.update) state.update.available = false;

@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file: http://127.0.0.1:* http://localhost:*; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
-  <title>GFX Ai Conv</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: file:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+  <title>GFX Ai Conv | Simple Preview</title>
   <link rel="stylesheet" href="styles.css">
   <script defer src="../../../node_modules/lucide/dist/umd/lucide.js"></script>
   <script defer src="renderer.js"></script>
 </head>
 <body>
   <header class="header">
-    <div class="brand">GFX <span>Ai Conv</span><span id="version" class="version"></span></div>
+    <div class="brand"><div class="brand-name">GFX <span>Ai Conv</span><span id="version" class="version"></span></div><span class="edition">Simple Preview</span></div>
     <div class="header-actions">
       <button id="update-button" class="icon-button" title="Проверить обновления" aria-label="Проверить обновления"><i data-lucide="download"></i></button>
       <button id="logs-button" class="icon-button" title="Собрать журнал" aria-label="Собрать журнал"><i data-lucide="file-text"></i></button>
@@ -50,7 +50,7 @@
           <label>Начало, с<input id="range-start" type="number" min="0" step="any" placeholder="С начала"></label>
           <label>Конец, с<input id="range-end" type="number" min="0" step="any" placeholder="До конца"></label>
           <label id="conversion-field" class="wide" hidden>Возврат<select id="conversion"><option value="preserve">Сохранить исходный формат</option><option value="exr">Конвертировать в EXR</option></select></label>
-          <label id="export-field">Экспорт одиночного EXR<select id="export-kind"><option value="video">Видео</option><option value="png">PNG</option></select></label>
+          <label id="export-field">Экспорт<select id="export-kind"><option value="video">Видео</option><option value="png">Кадр PNG</option></select></label>
           <label id="frame-field">Индекс кадра (с 0)<input id="frame-index" type="number" min="0" step="1" value="0"></label>
           <div class="manifest-field wide"><label for="manifest">Манифест источника (необязательно)</label><div class="path-control"><input id="manifest" readonly placeholder="Не выбран"><button id="manifest-button" class="icon-button" title="Выбрать JSON-манифест" aria-label="Выбрать JSON-манифест"><i data-lucide="file-json"></i></button><button id="manifest-clear" class="icon-button" title="Убрать манифест" aria-label="Убрать манифест"><i data-lucide="x"></i></button></div></div>
         </div>
@@ -98,12 +98,12 @@
     <div class="faq-content">
       <details open><summary>Что делают два режима?</summary><p>«Для AI» подготавливает изображение или видео для AI-сервисов. Это преобразование в SDR, а не обещание сохранения всего исходного диапазона. «В Nuke» подготавливает полученный результат и файл .nk для дальнейшей работы. Для конвертации установленный Nuke не нужен; он понадобится, чтобы открыть .nk.</p></details>
       <details><summary>Как выбирается цвет?</summary><p>Список берётся из реальной конфигурации OCIO ACES 1.2. Для неизвестного EXR предлагается ACES - ACES2065-1, но это не определение цвета файла: выберите верное пространство и явно подтвердите его для каждого задания. Для видео с известными SDR-метаданными возможно автоматическое назначение Output - Rec.709. Неизвестное видео также требует подтверждения. Output - sRGB в ACES 1.2 используется для sRGB-вывода; оно не взаимозаменяемо с линейным ACEScg.</p></details>
-      <details><summary>Почему у EXR 24 FPS?</summary><p>У EXR обычно нет надёжной частоты воспроизведения. По умолчанию используется 24 FPS, её можно изменить до добавления источника. Видео сохраняет известную исходную частоту. Пустой FPS результата сохраняет частоту источника; пустые ширина и высота сохраняют размер. Диапазон задаётся в секундах, обе границы необязательны.</p></details>
+      <details><summary>Почему у EXR 24 FPS?</summary><p>У EXR обычно нет надёжной частоты воспроизведения. По умолчанию используется 24 FPS, её можно изменить до добавления источника в обоих режимах, включая возврат EXR в Nuke. Видео сохраняет известную исходную частоту. Пустой FPS результата сохраняет частоту источника; пустые ширина и высота сохраняют размер. Диапазон задаётся в секундах, обе границы необязательны.</p></details>
       <details><summary>Что сохраняется при возврате в Nuke?</summary><p>По умолчанию сохраняется исходный формат без изменения геометрии или диапазона. MP4 возвращается копией вместе с .nk, а не становится исходным EXR. Альтернативный вариант — конвертация в EXR. Ни EXR-контейнер, ни .nk не восстанавливают потерянные HDR-данные, детали или цвет исходника после AI-обработки. JSON-манифест можно связать с заданием для передачи имеющихся сведений об источнике.</p></details>
-      <details><summary>Что происходит с альфой?</summary><p>Если backend обнаружил альфа-канал, экспорт для AI заблокирован до явного подтверждения сведения альфы на чёрный фон. Это удаляет прозрачность из результата. Подтверждение относится только к выбранному заданию; исходный файл остаётся нетронутым.</p></details>
-      <details><summary>Можно ли получить PNG из EXR?</summary><p>Для одиночного EXR доступен экспорт PNG вместо видео. Индекс кадра начинается с 0. Эта опция не переключает всю последовательность или видео в набор PNG.</p></details>
+      <details><summary>Что происходит с альфой?</summary><p>Если backend обнаружил альфа-канал, экспорт видео для AI заблокирован до явного подтверждения сведения альфы на чёрный фон. Это удаляет прозрачность из видео. Подтверждение относится только к выбранному заданию; исходный файл остаётся нетронутым. При экспорте кадра PNG backend сохраняет альфу, поэтому подтверждение сведения для PNG не требуется.</p></details>
+      <details><summary>Как получить выбранный кадр PNG?</summary><p>В режиме «Для AI» выберите «Кадр PNG» для любого источника: видео, последовательности или отдельного изображения. Индекс кадра начинается с 0; для одиночного изображения используется 0. Экспортируется один выбранный кадр, а не вся последовательность или видео в виде набора PNG. Альфа сохраняется.</p></details>
       <details><summary>Как обрабатываются папки и пропуски кадров?</summary><p>Источники определяет backend. Если в папке несколько кандидатов, выберите нужные из полного списка. Кандидат с пропусками кадров заблокирован. Нумерация и состав последовательностей не угадываются интерфейсом.</p></details>
-      <details><summary>Пауза, остановка и повтор</summary><p>Пауза дожидается окончания текущего задания. Остановка запрашивает отмену текущей операции; очередь сохраняется. Ошибочное или остановленное задание можно повторить отдельно. Очистка активной очереди требует подтверждения, затем запрашивает остановку и дожидается её окончания.</p></details>
+      <details><summary>Пауза, остановка и повтор</summary><p>Пауза дожидается окончания текущего задания. Остановка запрашивает отмену текущей операции; очередь сохраняется. Завершённое, ошибочное или остановленное задание можно повторить: создаётся новое задание с тем же источником и текущими настройками, включая направление. Предыдущее задание и его результат сохраняются, файлы не удаляются. Очистка активной очереди требует подтверждения, затем запрашивает остановку и дожидается её окончания.</p></details>
       <details><summary>Изменяются ли исходники и задания в очереди?</summary><p>Исходные файлы не изменяются. Папка результата запоминается. Настройки сохраняются при изменении и применяются к новым заданиям; уже добавленные задания сохраняют свой снимок настроек. Цвет и согласие на сведение альфы проверяются отдельно для каждого источника. Результаты конвертации сохраняются отдельно; очистка очереди не удаляет файлы.</p></details>
     </div>
   </dialog>
