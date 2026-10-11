@@ -630,7 +630,7 @@
       $("update-info").textContent = result.available ? `Доступна версия ${result.version || ""}` : "Установлена актуальная версия.";
       $("update-notes").textContent = result.notes || "";
       showMessage("update-status", "");
-      if (!silent) $("update-dialog").showModal();
+      if (!silent || (result.available && !state.processing)) $("update-dialog").showModal();
     } catch (error) {
       if (!silent) {
         $("update-info").textContent = "Не удалось проверить обновления.";
@@ -765,6 +765,7 @@
       $("runtime-status").textContent = state.ready ? "Готов к работе" : "Backend недоступен";
       if (!state.ready) showMessage("startup-error", initial.runtime?.error || (state.colors.length ? "Backend не готов." : "Конфигурация OCIO не содержит цветовых пространств."));
       reflectSettings();
+      if (initial.updateResult) showMessage("notice", initial.updateResult.ok ? `Установлена версия ${initial.updateResult.version}.` : `Обновление не установлено: ${initial.updateResult.message}`);
       const progressUnsubscribe = api.onProgress(onProgress);
       if (typeof progressUnsubscribe === "function") state.unsubscribers.push(progressUnsubscribe);
       const updateUnsubscribe = api.onUpdateProgress((progress) => {

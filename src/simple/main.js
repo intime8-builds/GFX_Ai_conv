@@ -12,6 +12,7 @@ const { createLogger } = require("../core/logger");
 const { normalizeVersion, isNewerVersion, validateInstallerAsset, verifyInstallerDownload } = require("../core/update");
 const { DEFAULTS, sanitizeSettings } = require("./settings");
 const { runtimePaths, launchWorker, terminateTree } = require("./runtime");
+const { installationPlan, installationScript } = require("./updates");
 
 const PRODUCT = "GFX Ai Conv Simple Preview";
 const REPOSITORY = { owner: "intime8-builds", name: "GFX_Ai_conv" };
@@ -21,6 +22,7 @@ const SETTINGS = path.join(DATA, "settings.json");
 const PREVIEWS = path.join(DATA, "previews");
 const JOBS = path.join(DATA, "jobs");
 const UPDATES = path.join(DATA, "updates");
+const UPDATE_RESULT = path.join(DATA, "update-result.json");
 for (const directory of [DATA, PREVIEWS, JOBS, UPDATES]) fs.mkdirSync(directory, { recursive: true });
 app.setName(PRODUCT);
 app.setPath("userData", DATA);
@@ -74,6 +76,18 @@ async function colors() {
   if (!colorsPromise) colorsPromise = backgroundWorker("info", {}).catch((error) => { colorsPromise = undefined; throw error; });
   return colorsPromise;
 }
+function updateResult() {
+  try {
+    const result = JSON.parse(fs.readFileSync(UPDATE_RESULT, "utf8").replace(/^\uFEFF/, ""));
+    fs.unlinkSync(UPDATE_RESULT);
+    log(result.ok ? "info" : "error", "update.result", result);
+    return result;
+  } catch { return null; }
+}
+function updatePlan() {
+  return installationPlan(process.execPath, process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
+    fs.existsSync(path.join(path.dirname(process.execPath), `Uninstall ${PRODUCT}.exe`)));
+}
 function sourceFor(request) {
   const source = sources.get(request?.source?.id);
   if (!source) throw new Error("Источник больше не доступен. Добавьте файл заново.");
@@ -83,8 +97,9 @@ function sourceFor(request) {
 handle("simple:initial", async () => {
   const saved = settings();
   if (saved.outputDir) accessiblePaths.add(path.resolve(saved.outputDir));
-  try { return { version: app.getVersion(), settings: saved, colors: await colors(), runtime: { ready: true } }; }
-  catch (error) { return { version: app.getVersion(), settings: saved, colors: { spaces: [], configLabel: "ACES 1.2" }, runtime: { ready: false, error: error.message } }; }
+  const initial = { version: app.getVersion(), settings: saved, updateResult: updateResult() };
+  try { return { ...initial, colors: await colors(), runtime: { ready: true } }; }
+  catch (error) { return { ...initial, colors: { spaces: [], configLabel: "ACES 1.2" }, runtime: { ready: false, error: error.message } }; }
 });
 handle("simple:settings", persist);
 handle("simple:files", async () => {
@@ -185,7 +200,8 @@ async function checkUpdates() {
     if (!asset) continue;
     pendingUpdate = { ...validateInstallerAsset(asset, REPOSITORY, version, PRODUCT), notes: release.body || "" };
   }
-  return pendingUpdate ? { available: true, version: pendingUpdate.version, notes: pendingUpdate.notes } : { available: false };
+  const message = updatePlan().portable ? "Это portable-версия. Обновление установит отдельный Simple Preview в папку пользователя и запустит его. Текущая portable-папка останется без изменений.\n\n" : "";
+  return pendingUpdate ? { available: true, version: pendingUpdate.version, notes: message + pendingUpdate.notes } : { available: false };
 }
 handle("simple:updates", checkUpdates);
 handle("simple:install", async () => {
@@ -216,9 +232,8 @@ handle("simple:install", async () => {
     verifyInstallerDownload(asset, count, digest.digest("hex"));
     await fsp.rename(temporary, installer);
     send("simple:update-progress", { phase: "install", percent: 100, message: "Приложение закроется для установки и перезапуска." });
-    const escaped = installer.replace(/'/g, "''");
-    const executable = process.execPath.replace(/'/g, "''");
-    const script = `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue; $p = Start-Process -FilePath '${escaped}' -ArgumentList '/S' -WindowStyle Hidden -PassThru -Wait; if ($p.ExitCode -eq 0) { Start-Process -FilePath '${executable}' -WindowStyle Hidden }`;
+    const script = installationScript({ pid: process.pid, installer, previousExecutable: process.execPath,
+      plan: updatePlan(), statusFile: UPDATE_RESULT, version: asset.version });
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { detached: true, windowsHide: true, stdio: "ignore" });
     await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     child.unref();
